@@ -8,4 +8,5 @@ services:
       MQTT_BROKER: mqtt.fixetics.co.za
       MQTT_PORT: 1883
       MQTT_TOPIC: vehicle.ignition
+      PYTHONUNBUFFERED: 1
     restart: unless-stopped
