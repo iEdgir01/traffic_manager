@@ -15,7 +15,7 @@ COPY main.py /app/main.py
 COPY route_manager.py /app/route_manager.py
 COPY discord_bot /app/discord_bot
 COPY ignition_subscriber /app/ignition_subscriber
-COPY traffic_utils /app/traffic_utils
+COPY traffic_utils.py /app/traffic_utils.py
 COPY requirements.txt /app/requirements.txt
 
 # --------------------
