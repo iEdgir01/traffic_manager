@@ -58,10 +58,27 @@ class IgnitionMonitor:
         
         try:
             results = process_all_routes_for_discord()
+            
+            # Check if we actually have results to send
+            if not results or len(results) == 0:
+                print("TRAFFIC: No routes or traffic data available")
+                return
+                
+            # Check if results contain actual traffic data
+            has_traffic_data = any(
+                route.get('traffic_alerts') or route.get('incidents') 
+                for route in results if isinstance(route, dict)
+            )
+            
+            if not has_traffic_data:
+                print("TRAFFIC: No traffic alerts to send")
+                return
+            
             post_traffic_alerts(results)
             print("TRAFFIC: Alerts sent successfully")
+            
         except Exception as e:
-            print(f"ERROR: Traffic alerts failed: {e}")
+            print(f"ERROR: Traffic processing failed: {e}")
     
     def _monitor_ignition(self):
         """Monitor ignition state and handle timeout"""
