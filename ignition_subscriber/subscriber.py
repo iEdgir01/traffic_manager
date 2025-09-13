@@ -26,11 +26,11 @@ class IgnitionMonitor:
     def on_connect(self, client, userdata, flags, rc):
         """Callback for MQTT connection"""
         if rc == 0:
-            print(f"Connected to MQTT broker {self.mqtt_broker}:{self.mqtt_port}")
+            print(f"MQTT: Connected to {self.mqtt_broker}:{self.mqtt_port}")
             client.subscribe(self.mqtt_topic)
-            print(f"Subscribed to topic: {self.mqtt_topic}")
+            print(f"MQTT: Subscribed to {self.mqtt_topic}")
         else:
-            print(f"Failed to connect to MQTT broker. Return code: {rc}")
+            print(f"MQTT: Connection failed with code {rc}")
     
     def on_message(self, client, userdata, msg):
         """Callback for MQTT messages"""
@@ -46,25 +46,22 @@ class IgnitionMonitor:
                 self._handle_ignition_on(payload, msg.topic)
                 
         except json.JSONDecodeError as e:
-            print(f"❌ Failed to decode JSON message: {msg.payload} - Error: {e}")
+            print(f"ERROR: Failed to decode JSON message: {msg.payload} - {e}")
         except Exception as e:
-            print(f"❌ Error processing message: {e}")
+            print(f"ERROR: Processing message failed: {e}")
     
     def _handle_ignition_on(self, payload, topic):
         """Handle ignition turning on"""
         self.ignition_state = True
         timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
-        print(f"🔥 Ignition ON detected at {timestamp}")
-        print(f"📩 Topic: {topic}")
-        print(f"💾 Payload: {json.dumps(payload, indent=2)}")
-        print(f"⏱️  Timeout: {self.timeout}s")
+        print(f"IGNITION: ON at {timestamp}")
         
         try:
             results = process_all_routes_for_discord()
             post_traffic_alerts(results)
-            print("📤 Traffic alerts sent successfully")
+            print("TRAFFIC: Alerts sent successfully")
         except Exception as e:
-            print(f"❌ Error sending traffic alerts: {e}")
+            print(f"ERROR: Traffic alerts failed: {e}")
     
     def _monitor_ignition(self):
         """Monitor ignition state and handle timeout"""
@@ -75,8 +72,7 @@ class IgnitionMonitor:
                 if time_since_last > self.timeout:
                     self.ignition_state = False
                     timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
-                    print(f"💤 Ignition OFF detected at {timestamp} "
-                          f"(timeout: {self.timeout}s)")
+                    print(f"IGNITION: OFF at {timestamp} (timeout: {self.timeout}s)")
                     self.last_msg_time = None
             
             time.sleep(2)  # Check every 2 seconds
@@ -88,10 +84,10 @@ class IgnitionMonitor:
             if not all([self.mqtt_broker, self.mqtt_port, self.mqtt_topic]):
                 raise ValueError("Missing MQTT configuration. Check environment variables.")
             
-            print(f"🚀 Starting Ignition Monitor...")
-            print(f"📡 Broker: {self.mqtt_broker}:{self.mqtt_port}")
-            print(f"📋 Topic: {self.mqtt_topic}")
-            print(f"⏱️  Static timeout: {self.timeout}s")
+            print("MONITOR: Starting ignition monitor")
+            print(f"BROKER: {self.mqtt_broker}:{self.mqtt_port}")
+            print(f"TOPIC: {self.mqtt_topic}")
+            print(f"TIMEOUT: {self.timeout}s")
             
             # Connect to MQTT broker
             self.client.connect(self.mqtt_broker, self.mqtt_port, 60)
@@ -99,17 +95,17 @@ class IgnitionMonitor:
             # Start monitoring thread
             monitor_thread = threading.Thread(target=self._monitor_ignition, daemon=True)
             monitor_thread.start()
-            print("🔄 Monitoring thread started")
+            print("MONITOR: Thread started")
             
             # Start MQTT loop
-            print("🔄 Starting MQTT loop...")
+            print("MQTT: Starting message loop")
             self.client.loop_forever()
             
         except KeyboardInterrupt:
-            print("\n⏹️  Shutting down gracefully...")
+            print("SHUTDOWN: Stopping gracefully...")
             self.client.disconnect()
         except Exception as e:
-            print(f"❌ Fatal error: {e}")
+            print(f"FATAL: {e}")
             raise
 
 
