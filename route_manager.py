@@ -17,7 +17,6 @@ from traffic_utils import (
     get_route_map,
     process_all_routes
 )
-from discord_bot.discord_notify import send_alert
 
 # ---------------------
 # Paths from Docker environment
