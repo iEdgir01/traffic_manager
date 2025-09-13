@@ -5,8 +5,7 @@ services:
     networks:
       - tailscale-traffic-manager-net
     environment:
-      MQTT_BROKER: 100.79.211.98
+      MQTT_BROKER: mqtt.fixetics.co.za
       MQTT_PORT: 1883
       MQTT_TOPIC: vehicle.ignition
-      TAILSCALE_IP: 100.101.159.54
     restart: unless-stopped

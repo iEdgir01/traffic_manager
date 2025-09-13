@@ -5,8 +5,8 @@ import threading
 import paho.mqtt.client as mqtt
 
 MQTT_BROKER = os.getenv("MQTT_BROKER_HOST")
-MQTT_PORT = int(os.getenv("MQTT_BROKER_PORT", 1883))
-MQTT_TOPIC = os.getenv("MQTT_TOPIC", "vehicle.ignition")
+MQTT_PORT = int(os.getenv("MQTT_BROKER_PORT"))
+MQTT_TOPIC = os.getenv("MQTT_TOPIC")
 
 # State tracking
 ignition_state = False
