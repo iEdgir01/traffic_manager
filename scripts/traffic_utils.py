@@ -1,4 +1,3 @@
-# traffic_check.py
 import os
 import re
 import html
