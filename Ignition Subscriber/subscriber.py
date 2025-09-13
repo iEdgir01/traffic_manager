@@ -4,8 +4,8 @@ import time
 import threading
 import paho.mqtt.client as mqtt
 
-MQTT_BROKER = os.getenv("MQTT_BROKER_HOST")
-MQTT_PORT = int(os.getenv("MQTT_BROKER_PORT"))
+MQTT_BROKER = os.getenv("MQTT_BROKER")
+MQTT_PORT = int(os.getenv("MQTT_PORT"))
 MQTT_TOPIC = os.getenv("MQTT_TOPIC")
 
 # State tracking
