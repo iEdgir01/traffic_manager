@@ -61,8 +61,6 @@ def post_traffic_alerts(results):
         print("No traffic results to process.")
         return
 
-    headers = {"Content-Type": "application/json"}
-
     for r in results:
         try:
             route_id = r["route_id"]
@@ -76,17 +74,27 @@ def post_traffic_alerts(results):
                 post = True
 
             if post:
-                # Build embed payload
                 embed = format_embed(r)
+
+                files = None
+                if r.get("map_path") and os.path.isfile(r["map_path"]):
+                    # Attach local file
+                    files = {"file": open(r["map_path"], "rb")}
+                    # For embeds, set image url to "attachment://filename"
+                    embed.set_image(url=f"attachment://{os.path.basename(r['map_path'])}")
+
                 payload = {"embeds": [embed.to_dict()]}
 
-                response = requests.post(WEBHOOK_URL, json=payload, headers=headers, timeout=10)
+                response = requests.post(WEBHOOK_URL, data={"payload_json": json.dumps(payload)}, files=files, timeout=10)
                 if response.status_code not in (200, 204):
                     print(f"❌ Failed to post alert for {r['name']}: {response.status_code} - {response.text}")
                 else:
                     print(f"✅ Alert posted for {r['name']}")
 
-            # Update DB with the current state regardless
+                # Close the file handle if used
+                if files:
+                    files["file"].close()
+
             update_last_state(route_id, current_state)
 
         except Exception as e:
