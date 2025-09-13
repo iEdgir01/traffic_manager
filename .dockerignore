@@ -1,0 +1,19 @@
+# Ignore Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Ignore virtual environments
+venv/
+test/mqtt_test/venv/
+
+# Ignore test directories
+test/
+
+# Git
+.git
+.gitignore
+
+# IDE/Editor configs
+.vscode/
+*.swp
