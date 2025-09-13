@@ -241,7 +241,7 @@ def process_all_routes():
     # Collect all route results
     results = []
     for route in routes:
-        route_id, name, start_lat, start_lng, end_lat, end_lng, historical_json = route
+        route_id, name, start_lat, start_lng, end_lat, end_lng, last_normal, last_state, historical_json = route
         historical_times = json.loads(historical_json) if historical_json else []
         baseline = calculate_baseline(historical_times)
         traffic = check_route_traffic(f"{start_lat},{start_lng}", f"{end_lat},{end_lng}", baseline)
@@ -267,9 +267,6 @@ def process_all_routes():
 
     return results
 
-# ---------------------
-# Process all routes for Discord
-# ---------------------
 def process_all_routes_for_discord():
     """
     Processes all routes and returns results suitable for posting to Discord.
@@ -283,7 +280,7 @@ def process_all_routes_for_discord():
 
     results = []
     for route in routes:
-        route_id, name, start_lat, start_lng, end_lat, end_lng, historical_json = route
+        route_id, name, start_lat, start_lng, end_lat, end_lng, last_normal, last_state, historical_json = route
         historical_times = json.loads(historical_json) if historical_json else []
         baseline = calculate_baseline(historical_times)
         traffic = check_route_traffic(f"{start_lat},{start_lng}", f"{end_lat},{end_lng}", baseline)
@@ -296,7 +293,8 @@ def process_all_routes_for_discord():
                 "distance": f"{traffic['distance_km']:.2f} km",
                 "live": f"{traffic['total_live']} min",
                 "delay": f"+{traffic['total_delay']} min",
-                "total_normal": traffic["total_normal"]
+                "total_normal": traffic["total_normal"],
+                "heavy_segments": traffic["heavy_segments"]
             })
 
     # Update DB
