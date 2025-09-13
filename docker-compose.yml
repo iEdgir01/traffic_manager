@@ -1,0 +1,24 @@
+version: "3.9"
+
+services:
+  traffic_manager:
+    build: .
+    container_name: traffic_manager
+    restart: unless-stopped
+    environment:
+      PYTHONUNBUFFERED: 1
+      MQTT_BROKER: 
+      MQTT_PORT: 
+      MQTT_TOPIC: 
+      DISCORD_BOT_TOKEN:
+      DISCORD_WEBHOOK_URL: 
+      GOOGLE_MAPS_API_KEY: 
+      DATA_DIR: /app/data
+      MAPS_DIR: /app/data/maps
+      DB_PATH: /app/data/traffic_routes.db
+    volumes:
+      - ./data:/app/data
+    tty: true
+    stdin_open: true
+    networks:
+      - tailscale-traffic-manager-ne

@@ -1,9 +1,9 @@
 import os
-import sys
 import sqlite3
 import json
 import re
-from datetime import datetime
+from pathlib import Path
+
 from traffic_utils import (
     init_db,
     get_routes,
@@ -20,15 +20,17 @@ from traffic_utils import (
 from discord_bot.discord_notify import send_alert
 
 # ---------------------
-# Database setup path
+# Paths from Docker environment
 # ---------------------
-DATA_DIR = os.path.join(os.getcwd(), "data")
-os.makedirs(DATA_DIR, exist_ok=True)
+DATA_DIR = Path(os.environ["DATA_DIR"])
+MAPS_DIR = Path(os.environ["MAPS_DIR"])
+DB_PATH = Path(os.environ["DB_PATH"])
 
-MAPS_DIR = os.path.join(DATA_DIR, "maps")
-os.makedirs(MAPS_DIR, exist_ok=True)
+# Ensure directories exist
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+MAPS_DIR.mkdir(parents=True, exist_ok=True)
 
-DB_PATH = os.path.join(DATA_DIR, "traffic_routes.db")
+print(f"Using DB at: {DB_PATH}")
 
 # ---------------------
 # DB Connection Wrapper

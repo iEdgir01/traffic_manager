@@ -9,9 +9,9 @@ import requests
 # Environment variables
 # ---------------------
 API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
-DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
-MAPS_DIR = Path(os.getenv("MAPS_DIR", str(DATA_DIR / "maps")))
-DB_PATH = Path(os.getenv("DB_PATH", str(DATA_DIR / "traffic_routes.db")))
+DATA_DIR = Path(os.getenv("DATA_DIR"))
+MAPS_DIR = Path(os.getenv("MAPS_DIR"))
+DB_PATH = Path(os.getenv("DB_PATH"))
 
 # Ensure directories exist
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -259,6 +259,47 @@ def process_all_routes():
     # ---------------------
     # Update DB
     # ---------------------
+    for r in results:
+        try:
+            update_route_time(r["route_id"], r["total_normal"], r["state"])
+        except Exception as e:
+            print(f"Failed to update route {r['name']} in DB: {e}")
+
+    return results
+
+# ---------------------
+# Process all routes for Discord
+# ---------------------
+def process_all_routes_for_discord():
+    """
+    Processes all routes and returns results suitable for posting to Discord.
+    Does not post anything itself.
+    """
+    init_db()
+    routes = get_routes()
+    if not routes:
+        print("No routes found.")
+        return []
+
+    results = []
+    for route in routes:
+        route_id, name, start_lat, start_lng, end_lat, end_lng, last_normal, last_state, historical_json = route
+        historical_times = json.loads(historical_json) if historical_json else []
+        baseline = calculate_baseline(historical_times)
+        traffic = check_route_traffic(f"{start_lat},{start_lng}", f"{end_lat},{end_lng}", baseline)
+
+        if traffic:
+            results.append({
+                "route_id": route_id,
+                "name": name,
+                "state": traffic["state"],
+                "distance": f"{traffic['distance_km']:.2f} km",
+                "live": f"{traffic['total_live']} min",
+                "delay": f"+{traffic['total_delay']} min",
+                "total_normal": traffic["total_normal"]
+            })
+
+    # Update DB
     for r in results:
         try:
             update_route_time(r["route_id"], r["total_normal"], r["state"])
