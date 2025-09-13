@@ -1,0 +1,6 @@
+2025-09-11 20:43:04,378 [WARNING] PyNaCl is not installed, voice will NOT be supported
+2025-09-11 20:43:04,380 [INFO] logging in using static token
+2025-09-11 20:43:06,151 [INFO] Shard ID None has connected to Gateway (Session ID: 7ee2481a557f5d001728da0917f020b3).
+2025-09-11 20:43:08,165 [INFO] Bot is ready. Logged in as TrafficHelper#4374
+2025-09-11 20:43:43,823 [ERROR] Ignoring exception in command None
+discord.ext.commands.errors.CommandNotFound: Command "menu" is not found
