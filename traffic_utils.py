@@ -241,7 +241,7 @@ def process_all_routes():
     # Collect all route results
     results = []
     for route in routes:
-        route_id, name, start_lat, start_lng, end_lat, end_lng, last_normal, last_state, historical_json = route
+        route_id, name, start_lat, start_lng, end_lat, end_lng, historical_json = route
         historical_times = json.loads(historical_json) if historical_json else []
         baseline = calculate_baseline(historical_times)
         traffic = check_route_traffic(f"{start_lat},{start_lng}", f"{end_lat},{end_lng}", baseline)
@@ -283,7 +283,7 @@ def process_all_routes_for_discord():
 
     results = []
     for route in routes:
-        route_id, name, start_lat, start_lng, end_lat, end_lng, last_normal, last_state, historical_json = route
+        route_id, name, start_lat, start_lng, end_lat, end_lng, historical_json = route
         historical_times = json.loads(historical_json) if historical_json else []
         baseline = calculate_baseline(historical_times)
         traffic = check_route_traffic(f"{start_lat},{start_lng}", f"{end_lat},{end_lng}", baseline)

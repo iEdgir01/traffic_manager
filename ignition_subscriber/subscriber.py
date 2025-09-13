@@ -6,7 +6,6 @@ import paho.mqtt.client as mqtt
 from traffic_utils import process_all_routes_for_discord
 from discord_bot.discord_notify import post_traffic_alerts
 
-
 class IgnitionMonitor:
     def __init__(self):
         # MQTT Configuration
