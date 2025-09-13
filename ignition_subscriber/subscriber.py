@@ -6,7 +6,6 @@ from collections import deque
 import paho.mqtt.client as mqtt
 from traffic_utils import process_all_routes_for_discord
 from discord_bot.discord_notify import post_traffic_alerts
-
 class IgnitionMonitor:
     def __init__(self):
         self.mqtt_broker = os.getenv("MQTT_BROKER")
@@ -15,7 +14,7 @@ class IgnitionMonitor:
 
         self.ignition_state = False
         self.last_msg_time = None
-        self.timeout = 60  # static 1-minute timeout
+        self.timeout = int(os.getenv("IGNITION_TIMEOUT"))
 
         self.client = mqtt.Client()
         self.client.on_connect = self.on_connect
