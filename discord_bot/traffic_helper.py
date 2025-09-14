@@ -1741,7 +1741,7 @@ class MainMenu(View):
         self.add_item(TrafficStatusMainButton())
         self.add_item(ThresholdsButton())
 
-MAIN_MENU_VIEW = MainMenu(timeout=None)
+MAIN_MENU_VIEW = MainMenu()
 
 # --------------------
 # Bot events & commands
