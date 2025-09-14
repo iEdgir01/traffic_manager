@@ -2,3 +2,4 @@ requests
 discord.py
 paho-mqtt==1.6
 Pillow
+psycopg2-binary

@@ -1,8 +1,22 @@
 services:
+  postgres_db:
+    image: postgres:15
+    container_name: postgres_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: YOUR_POSTGRES_USER
+      POSTGRES_PASSWORD: YOUR_POSTGRES_PASSWORD
+      POSTGRES_DB: YOUR_POSTGRES_DB
+    volumes:
+      - ./data/db:/var/lib/postgresql/data
+    networks:
+      - tailscale-traffic-manager-net
   ignition_subscriber:
     image: iedgir01/traffic_manager_ignition_subscriber:latest
     container_name: ignition_subscriber
     restart: unless-stopped
+    depends_on:
+      - postgres_db
     environment:
       PYTHONUNBUFFERED: 1
       MQTT_BROKER: YOUR_MQTT_BROKER
@@ -13,7 +27,11 @@ services:
       GOOGLE_MAPS_API_KEY: YOUR_GOOGLE_MAPS_API_KEY
       DATA_DIR: /app/data
       MAPS_DIR: /app/data/maps
-      DB_PATH: /app/data/traffic_routes.db
+      POSTGRES_HOST: postgres_db
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: YOUR_POSTGRES_USER
+      POSTGRES_PASSWORD: YOUR_POSTGRES_PASSWORD
+      POSTGRES_DB: YOUR_POSTGRES_DB
     volumes:
       - ./data:/app/data
     networks:
@@ -23,13 +41,19 @@ services:
     image: iedgir01/traffic_manager_discord_bot:latest
     container_name: discord_bot
     restart: unless-stopped
+    depends_on:
+      - postgres_db
     environment:
       PYTHONUNBUFFERED: 1
       DISCORD_BOT_TOKEN: YOUR_DISCORD_BOT_TOKEN
       GOOGLE_MAPS_API_KEY: YOUR_GOOGLE_MAPS_API_KEY
       DATA_DIR: /app/data
       MAPS_DIR: /app/data/maps
-      DB_PATH: /app/data/traffic_routes.db
+      POSTGRES_HOST: postgres_db
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: YOUR_POSTGRES_USER
+      POSTGRES_PASSWORD: YOUR_POSTGRES_PASSWORD
+      POSTGRES_DB: YOUR_POSTGRES_DB
     volumes:
       - ./data:/app/data
     networks:

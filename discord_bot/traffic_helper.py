@@ -4,7 +4,6 @@ from discord.ui import View, Button, Select, Modal, TextInput
 from discord import SelectOption, File, Embed
 import os
 import math
-import sqlite3
 import re
 import asyncio
 from datetime import datetime
@@ -12,9 +11,11 @@ import logging
 import json
 from traffic_utils import (
     init_db,
+    with_db,
     get_route_map,
     get_routes,
     check_route_traffic,
+    update_route_time,
     summarize_segments,
     calculate_baseline,
     get_thresholds,
@@ -180,7 +181,7 @@ async def with_error_recovery(coro_func, *args, **kwargs):
 # Updated async wrappers with error recovery
 async def async_get_routes():
     """Async wrapper for get_routes with error recovery"""
-    return await with_error_recovery(lambda: run_in_thread(get_routes))
+    return await with_error_recovery(lambda: run_in_thread(get_routes()))
 
 async def async_add_route(name, start_lat, start_lng, end_lat, end_lng):
     """Async wrapper for adding route with error recovery"""
@@ -245,54 +246,21 @@ async def show_loading_state(interaction: discord.Interaction, title: str, descr
         pass
 
 # ---------------------
-# DB wrapper (keeping existing)
-# ---------------------
-def with_db(fn):
-    def wrapper(*args, **kwargs):
-        with sqlite3.connect(DB_PATH) as conn:
-            return fn(conn, *args, **kwargs)
-    return wrapper
-
-# ---------------------
-# DB functions (keeping existing)
+# DB functions
 # ---------------------
 @with_db
-def get_routes(conn):
-    c = conn.cursor()
-    c.execute("SELECT id, name, start_lat, start_lng, end_lat, end_lng, last_normal_time, last_state, historical_times FROM routes ORDER BY name")
-    return c.fetchall()
-
-@with_db
-def add_route(conn, name, start_lat, start_lng, end_lat, end_lng):
-    c = conn.cursor()
-    c.execute("SELECT id FROM routes WHERE name=?", (name,))
-    if c.fetchone():
-        raise ValueError(f"Route '{name}' already exists.")
-    c.execute(
-        '''
-        INSERT INTO routes (name, start_lat, start_lng, end_lat, end_lng, last_normal_time, last_state, historical_times)
-        VALUES (?, ?, ?, ?, ?, NULL, 'Normal', '[]')
-        ''',
-        (name, start_lat, start_lng, end_lat, end_lng)
-    )
+def add_route(name, start_lat, start_lng, end_lat, end_lng, conn=None):
+    with conn.cursor() as c:
+        c.execute("""
+            INSERT INTO routes (name, start_lat, start_lng, end_lat, end_lng, last_normal_time, last_state, historical_times)
+            VALUES (%s, %s, %s, %s, NULL, 'Normal', '[]')
+        """, (name, start_lat, start_lng, end_lat, end_lng))
     conn.commit()
 
 @with_db
-def delete_route(conn, name):
-    c = conn.cursor()
-    c.execute("DELETE FROM routes WHERE name=?", (name,))
-    conn.commit()
-
-@with_db
-def update_route_time(conn, route_id, normal_time, state, historical_entry):
-    c = conn.cursor()
-    c.execute('SELECT historical_times FROM routes WHERE id=?', (route_id,))
-    row = c.fetchone()
-    historical = json.loads(row[0]) if row and row[0] else []
-    historical.append(historical_entry)
-    historical = historical[-20:]  # keep last 20
-    c.execute('UPDATE routes SET last_normal_time=?, last_state=?, historical_times=? WHERE id=?',
-              (normal_time, state, json.dumps(historical), route_id))
+def delete_route(name, conn=None):
+    with conn.cursor() as c:
+        c.execute("DELETE FROM routes WHERE name=%s", (name,))
     conn.commit()
 
 # --------------------
@@ -1058,6 +1026,9 @@ class CheckAllRoutesButton(Button):
                         "route": route,
                         "traffic": traffic_result
                     })
+                    route_id = route[0]
+                    if "error" not in traffic_result:
+                        update_route_time(route_id, traffic_result["total_normal"], traffic_result["state"])
                 except RuntimeError as e:
                     if "shutdown" in str(e).lower():
                         return
@@ -1129,6 +1100,7 @@ class SelectRoute(Select):
                 color = BotStyles.ERROR_COLOR
                 state_text = "Error"
             else:
+                update_route_time(route_id, traffic["total_normal"], traffic["state"])
                 color = BotStyles.SUCCESS_COLOR if traffic['state'] == 'Normal' else BotStyles.ERROR_COLOR
                 state_text = "Normal" if traffic['state'] == 'Normal' else "Heavy"
 

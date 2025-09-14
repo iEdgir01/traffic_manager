@@ -22,17 +22,17 @@ async def run_in_thread(fn, *args, **kwargs):
 
 @with_db
 def get_last_state(route_id, conn=None):
-    cursor = conn.cursor()
-    cursor.execute("SELECT last_state FROM routes WHERE id = ?", (route_id,))
-    row = cursor.fetchone()
-    return row[0] if row else None
+    with conn.cursor() as cur:
+        cur.execute("SELECT last_state FROM routes WHERE id = %s", (route_id,))
+        row = cur.fetchone()
+        return row[0] if row else None
 
 
 @with_db
 def update_last_state(route_id, state, conn=None):
-    cursor = conn.cursor()
-    cursor.execute("UPDATE routes SET last_state = ? WHERE id = ?", (state, route_id))
-    conn.commit()
+    with conn.cursor() as cur:
+        cur.execute("UPDATE routes SET last_state = %s WHERE id = %s", (state, route_id))
+        conn.commit()
 
 
 # ---------------------
@@ -53,10 +53,17 @@ async def post_traffic_alerts_async():
         async with aiohttp.ClientSession() as session:
             for route in routes:
                 try:
-                    route_id, name, start_lat, start_lng, end_lat, end_lng, last_normal, last_state, historical_json = route
+                    route_id = route["id"]
+                    name = route["name"]
+                    start_lat = route["start_lat"]
+                    start_lng = route["start_lng"]
+                    end_lat = route["end_lat"]
+                    end_lng = route["end_lng"]
+                    historical_json = route.get("historical_times", "[]")
+
                     print(f"TRAFFIC: Processing route '{name}'")
 
-                    historical_data = [] if not historical_json else json.loads(historical_json)
+                    historical_data = json.loads(historical_json) if historical_json else []
                     baseline = calculate_baseline(historical_data)
                     print(f"TRAFFIC: Baseline calculated for {name}")
 
@@ -110,7 +117,7 @@ async def post_traffic_alerts_async():
                     await run_in_thread(update_last_state, route_id, current_state)
 
                 except Exception as e:
-                    print(f"❌ Error processing route '{route[1] if len(route) > 1 else 'Unknown'}': {e}")
+                    print(f"❌ Error processing route '{route.get('name','Unknown')}': {e}")
 
         if alerts_posted == 0:
             print("TRAFFIC: No traffic alerts were necessary")
