@@ -11,6 +11,9 @@ WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 if not WEBHOOK_URL:
     raise ValueError("Missing environment variable: DISCORD_WEBHOOK_URL")
 
+# ---------------------
+# DB helpers
+# ---------------------
 @with_db
 def get_last_state(route_id, conn=None):
     """Fetch last known state from DB"""
@@ -26,104 +29,106 @@ def update_last_state(route_id, state, conn=None):
     cursor.execute("UPDATE routes SET last_state = ? WHERE id = ?", (state, route_id))
     conn.commit()
 
+# ---------------------
+# Traffic check & posting
+# ---------------------
 def post_traffic_alerts():
     """
     Posts traffic alerts to Discord using check_route_traffic() and matching bot format.
+    Includes detailed debug logging for each route.
     """
     init_db()
     routes = get_routes()
     if not routes:
         print("No routes found.")
         return
-    
+
     alerts_posted = 0
-    
+
+    print("=== Starting Discord traffic alert check ===")
+    print(f"Total routes to check: {len(routes)}\n")
+
     for route in routes:
         try:
             route_id, name, start_lat, start_lng, end_lat, end_lng, last_normal, last_state, historical_json = route
-            
-            # Get baseline the same way as the bot
+
+            print(f"--- Checking route: {name} ---")
+            print(f"Start: {start_lat},{start_lng} | End: {end_lat},{end_lng}")
+
+            # Get baseline
             baseline = calculate_baseline([] if not historical_json else json.loads(historical_json))
-            
-            # Use the SAME function as manual checks
+            print(f"[DEBUG] Baseline (historical normal time): {baseline}")
+
+            # Traffic check
             traffic = check_route_traffic(f"{start_lat},{start_lng}", f"{end_lat},{end_lng}", baseline)
             
             if not traffic:
-                print(f"⚠️  No traffic data for {name}")
+                print(f"[DEBUG] No traffic data returned for {name}. Possible API/network issue.")
                 continue
-            
+
             current_state = traffic["state"]
             prev_state = get_last_state(route_id)
+
+            print(f"[DEBUG] Previous state: {prev_state}")
+            print(f"[DEBUG] Current state: {current_state}")
+            print(f"[DEBUG] Total normal: {traffic.get('total_normal')}, Total live: {traffic.get('total_live')}, Total delay: {traffic.get('total_delay')}")
+            print(f"[DEBUG] Heavy segments: {traffic.get('heavy_segments')}\n")
+
             should_post = False
-            
+
             # Posting rules
             if current_state.lower() == "heavy":
                 should_post = True
-                print(f"🔴 Posting {name}: Heavy traffic detected")
+                print(f"[DEBUG] Decision: Heavy traffic → will post alert")
             elif prev_state and prev_state.lower() == "heavy" and current_state.lower() == "normal":
                 should_post = True
-                print(f"🟢 Posting {name}: Traffic cleared")
-            
+                print(f"[DEBUG] Decision: Traffic cleared → will post alert")
+            else:
+                print(f"[DEBUG] Decision: No alert needed for {name}")
+
             if should_post:
-                # Use the EXACT same format as your bot
-                if "error" in traffic:
-                    color = 0xFF0000  # Red for error
-                    state_text = "Error"
-                else:
-                    color = 0x00FF00 if traffic['state'] == 'Normal' else 0xFF0000  # Green/Red
-                    state_text = "Normal" if traffic['state'] == 'Normal' else "Heavy"
-                
+                color = 0x00FF00 if current_state == "Normal" else 0xFF0000
+                state_text = current_state
+
                 embed = discord.Embed(
                     title=f"Traffic Status - {name}",
                     color=color,
                     timestamp=discord.utils.utcnow()
                 )
-                
-                if "error" in traffic:
-                    embed.add_field(name="Error", value=traffic["error"], inline=False)
-                else:
-                    embed.add_field(name="State", value=state_text, inline=True)
-                    embed.add_field(name="Distance", value=f"{traffic['distance_km']:.2f} km", inline=True)
-                    embed.add_field(name="Live Time", value=f"{traffic['total_live']} min", inline=True)
-                    embed.add_field(name="Normal Time", value=f"{traffic['total_normal']} min", inline=True)
-                    embed.add_field(name="Delay", value=f"{traffic['total_delay']} min", inline=True)
-                    
-                    segments_summary = summarize_segments(traffic['heavy_segments']) or 'None'
-                    embed.add_field(name="Heavy Segments", value=segments_summary, inline=False)
-                
+                embed.add_field(name="State", value=state_text, inline=True)
+                embed.add_field(name="Distance", value=f"{traffic['distance_km']:.2f} km", inline=True)
+                embed.add_field(name="Live Time", value=f"{traffic['total_live']} min", inline=True)
+                embed.add_field(name="Normal Time", value=f"{traffic['total_normal']} min", inline=True)
+                embed.add_field(name="Delay", value=f"{traffic['total_delay']} min", inline=True)
+
+                segments_summary = summarize_segments(traffic['heavy_segments']) or 'None'
+                embed.add_field(name="Heavy Segments", value=segments_summary, inline=False)
+
                 # Post to Discord
                 payload = {"embeds": [embed.to_dict()]}
                 response = requests.post(WEBHOOK_URL, json=payload, timeout=10)
-                
+
                 if response.status_code not in (200, 204):
                     print(f"❌ Failed to post alert for {name}: {response.status_code} - {response.text}")
                 else:
                     print(f"✅ Alert posted for {name}")
                     alerts_posted += 1
-            else:
-                print(f"ℹ️  No alert needed for {name}: {current_state} traffic")
-            
+
             # Update database
             update_route_time(route_id, traffic["total_normal"], current_state)
             update_last_state(route_id, current_state)
-            
+
         except Exception as e:
             print(f"❌ Error processing route {route[1] if len(route) > 1 else 'Unknown'}: {e}")
-    
+
     if alerts_posted == 0:
         print("TRAFFIC: No traffic alerts to send")
     else:
         print(f"TRAFFIC: Posted {alerts_posted} alert(s)")
 
-# For backwards compatibility - this is what your main script calls
-def process_all_routes_for_discord():
-    """
-    Wrapper function for backwards compatibility.
-    Your existing code can still call this.
-    """
-    return post_traffic_alerts()
-
+# ---------------------
+# Run standalone
+# ---------------------
 if __name__ == "__main__":
-    # Can be run directly for testing
     print("Starting traffic alert check...")
     post_traffic_alerts()

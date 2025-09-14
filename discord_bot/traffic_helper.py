@@ -1744,31 +1744,32 @@ class MainMenu(View):
 # --------------------
 # Bot events & commands
 # --------------------
-@bot.event
-async def on_ready():
-    print(f"Bot is online as {bot.user}")
-    # Ensure we have a fresh thread pool on startup
-    create_thread_pool()
+def attach_bot_events(bot):
+    @bot.event
+    async def on_ready():
+        print(f"Bot is online as {bot.user}")
+        # Ensure we have a fresh thread pool on startup
+        create_thread_pool()
 
-@bot.command()
-async def menu(ctx):
-    await ctx.send("Traffic Manager Menu", view=MainMenu())
+    @bot.command()
+    async def menu(ctx):
+        await ctx.send("Traffic Manager Menu", view=MainMenu())
 
-# Handle errors gracefully without shutting down
-@bot.event
-async def on_error(event, *args, **kwargs):
-    logging.error(f"Bot error in {event}: {args}")
-    # Don't call cleanup here - just log the error
+    # Handle errors gracefully without shutting down
+    @bot.event
+    async def on_error(event, *args, **kwargs):
+        logging.error(f"Bot error in {event}: {args}")
+        # Don't call cleanup here - just log the error
 
-@bot.event
-async def on_command_error(ctx, error):
-    logging.error(f"Command error: {error}")
-    # Don't call cleanup here either
+    @bot.event
+    async def on_command_error(ctx, error):
+        logging.error(f"Command error: {error}")
+        # Don't call cleanup here either
 
-# Only cleanup on actual disconnect
-@bot.event
-async def on_disconnect():
-    await graceful_cleanup()
+    # Only cleanup on actual disconnect
+    @bot.event
+    async def on_disconnect():
+        await graceful_cleanup()
 
 # =========================
 # Bot runner with restart
@@ -1784,6 +1785,7 @@ async def run_discord_bot():
         try:
             if bot is None or bot.is_closed():
                 bot = create_bot_instance()
+                attach_bot_events(bot)
 
             ensure_thread_pool()
             await bot.start(TOKEN)
