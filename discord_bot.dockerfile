@@ -35,4 +35,4 @@ RUN echo '#!/bin/bash\npython3 /app/route_manager.py' > /usr/local/bin/menu \
 # --------------------
 # Default command
 # --------------------
-CMD ["python", "-u", "discord_bot/traffic_helper.py"]
+CMD ["python", "-m", "discord_bot.traffic_helper"]

@@ -3,7 +3,6 @@ services:
     image: iedgir01/traffic_manager_ignition_subscriber:latest
     container_name: ignition_subscriber
     restart: unless-stopped
-    command: ["python", "-u", "-m", "ignition_subscriber/subscriber.py"]
     environment:
       PYTHONUNBUFFERED: 1
       MQTT_BROKER: YOUR_MQTT_BROKER
@@ -24,7 +23,6 @@ services:
     image: iedgir01/traffic_manager_discord_bot:latest
     container_name: discord_bot
     restart: unless-stopped
-    command: ["python", "-u", "-m", "discord_bot/traffic_helper.py"]
     environment:
       PYTHONUNBUFFERED: 1
       DISCORD_BOT_TOKEN: YOUR_DISCORD_BOT_TOKEN

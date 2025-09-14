@@ -36,4 +36,4 @@ RUN echo '#!/bin/bash\npython3 /app/route_manager.py' > /usr/local/bin/menu \
 # --------------------
 # Default command
 # --------------------
-CMD ["python", "-u", "ignition_subscriber/subscriber.py"]
+CMD ["python", "-m", "ignition_subscriber.subscriber"]
