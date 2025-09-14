@@ -1,6 +1,6 @@
 services:
   ignition_subscriber:
-    image: iedgir01/traffic_manager:latest
+    image: iedgir01/traffic_manager_ignition_subscriber:latest
     container_name: ignition_subscriber
     restart: unless-stopped
     command: ["python", "-u", "-m", "ignition_subscriber/subscriber.py"]
@@ -21,7 +21,7 @@ services:
       - tailscale-traffic-manager-net
 
   discord_bot:
-    image: iedgir01/traffic_manager:latest
+    image: iedgir01/traffic_manager_discord_bot:latest
     container_name: discord_bot
     restart: unless-stopped
     command: ["python", "-u", "-m", "discord_bot/traffic_helper.py"]
