@@ -17,6 +17,7 @@ services:
       DB_PATH: /app/data/traffic_routes.db
     volumes:
       - ./data:/app/data
+      - ./app:/app
     networks:
       - tailscale-traffic-manager-net
 
@@ -34,6 +35,7 @@ services:
       DB_PATH: /app/data/traffic_routes.db
     volumes:
       - ./data:/app/data
+      - ./app:/app
     networks:
       - tailscale-traffic-manager-net
 
