@@ -32,7 +32,7 @@ def get_last_state(route_id, conn=None):
 def update_last_state(route_id, state, conn=None):
     with conn.cursor() as cur:
         cur.execute("UPDATE routes SET last_state = %s WHERE id = %s", (state, route_id))
-        conn.commit()
+    conn.commit()
 
 
 # ---------------------

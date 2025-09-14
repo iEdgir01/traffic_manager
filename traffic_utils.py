@@ -1,9 +1,12 @@
 import os
 import json
-import sqlite3
+import psycopg2
+import psycopg2.extras
 from pathlib import Path
 from datetime import datetime
 import requests
+import html
+import re
 
 # ---------------------
 # Environment variables
@@ -11,25 +14,46 @@ import requests
 API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
 DATA_DIR = Path(os.getenv("DATA_DIR"))
 MAPS_DIR = Path(os.getenv("MAPS_DIR"))
-DB_PATH = Path(os.getenv("DB_PATH"))
+
+# PostgreSQL connection parameters
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_PORT = os.getenv("DB_PORT", "5432")
+DB_NAME = os.getenv("DB_NAME", "traffic_db")
+DB_USER = os.getenv("DB_USER", "postgres")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
 
 # Ensure directories exist
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 MAPS_DIR.mkdir(parents=True, exist_ok=True)
 
-print(f"Using DB at: {DB_PATH}")
+# ---------------------
+# DB Connection
+# ---------------------
+def get_db_connection():
+    """Get a PostgreSQL database connection"""
+    return psycopg2.connect(
+        host=DB_HOST,
+        port=DB_PORT,
+        database=DB_NAME,
+        user=DB_USER,
+        password=DB_PASSWORD,
+        cursor_factory=psycopg2.extras.RealDictCursor
+    )
 
-# ---------------------
-# DB Wrapper
-# ---------------------
 def with_db(fn):
     """
-    Decorator that injects a managed sqlite3 connection.
+    Decorator that injects a managed PostgreSQL connection.
     Commits automatically and ensures cleanup.
     """
     def wrapper(*args, **kwargs):
-        with sqlite3.connect(DB_PATH) as conn:
-            return fn(*args, conn=conn, **kwargs)
+        with get_db_connection() as conn:
+            try:
+                result = fn(*args, conn=conn, **kwargs)
+                conn.commit()
+                return result
+            except Exception:
+                conn.rollback()
+                raise
     return wrapper
 
 # ---------------------
@@ -37,51 +61,54 @@ def with_db(fn):
 # ---------------------
 @with_db
 def init_db(conn=None):
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS routes (
-            id INTEGER PRIMARY KEY,
-            name TEXT UNIQUE,
-            start_lat REAL,
-            start_lng REAL,
-            end_lat REAL,
-            end_lng REAL,
-            last_normal_time INTEGER,
-            last_state TEXT,
-            historical_times TEXT
-        )
-    ''')
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS config (
-            id INTEGER PRIMARY KEY,
-            name TEXT UNIQUE,
-            value TEXT
-        )
-    ''')
-    conn.commit()
+    with conn.cursor() as c:
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS routes (
+                id SERIAL PRIMARY KEY,
+                name TEXT UNIQUE,
+                start_lat REAL,
+                start_lng REAL,
+                end_lat REAL,
+                end_lng REAL,
+                last_normal_time INTEGER,
+                last_state TEXT,
+                historical_times TEXT
+            )
+        ''')
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS config (
+                id SERIAL PRIMARY KEY,
+                name TEXT UNIQUE,
+                value TEXT
+            )
+        ''')
 
 @with_db
 def get_routes(conn=None):
-    c = conn.cursor()
-    c.execute('SELECT * FROM routes')
-    return c.fetchall()
+    with conn.cursor() as c:
+        c.execute('SELECT * FROM routes')
+        return c.fetchall()
 
 @with_db
 def update_route_time(route_id, normal_time, state, conn=None):
-    c = conn.cursor()
-    c.execute('SELECT historical_times FROM routes WHERE id=?', (route_id,))
-    row = c.fetchone()
-    historical = json.loads(row[0]) if row and row[0] else []
+    with conn.cursor() as c:
+        if route_id is None:
+            # This was used for new route insertion in the original code
+            # Handle this case separately
+            return
+            
+        c.execute('SELECT historical_times FROM routes WHERE id=%s', (route_id,))
+        row = c.fetchone()
+        historical = json.loads(row['historical_times']) if row and row['historical_times'] else []
 
-    entry = {"timestamp": datetime.now().isoformat(), "normal_time": normal_time, "state": state}
-    historical.append(entry)
-    historical = historical[-20:]  # keep last 20 entries
+        entry = {"timestamp": datetime.now().isoformat(), "normal_time": normal_time, "state": state}
+        historical.append(entry)
+        historical = historical[-20:]  # keep last 20 entries
 
-    c.execute(
-        'UPDATE routes SET last_normal_time=?, last_state=?, historical_times=? WHERE id=?',
-        (normal_time, state, json.dumps(historical), route_id)
-    )
-    conn.commit()
+        c.execute(
+            'UPDATE routes SET last_normal_time=%s, last_state=%s, historical_times=%s WHERE id=%s',
+            (normal_time, state, json.dumps(historical), route_id)
+        )
 
 def calculate_baseline(historical_times):
     if not historical_times:
@@ -94,20 +121,19 @@ def calculate_baseline(historical_times):
 # ---------------------
 @with_db
 def get_config(name, conn=None):
-    c = conn.cursor()
-    c.execute('SELECT value FROM config WHERE name=?', (name,))
-    row = c.fetchone()
-    return json.loads(row[0]) if row and row[0] else None
+    with conn.cursor() as c:
+        c.execute('SELECT value FROM config WHERE name=%s', (name,))
+        row = c.fetchone()
+        return json.loads(row['value']) if row and row['value'] else None
 
 @with_db
 def set_config(name, value, conn=None):
-    c = conn.cursor()
-    json_value = json.dumps(value)
-    c.execute('''
-        INSERT INTO config (name, value) VALUES (?, ?)
-        ON CONFLICT(name) DO UPDATE SET value=?
-    ''', (name, json_value, json_value))
-    conn.commit()
+    with conn.cursor() as c:
+        json_value = json.dumps(value)
+        c.execute('''
+            INSERT INTO config (name, value) VALUES (%s, %s)
+            ON CONFLICT(name) DO UPDATE SET value=%s
+        ''', (name, json_value, json_value))
 
 # Default thresholds
 DEFAULT_THRESHOLDS = [
@@ -140,7 +166,6 @@ def get_dynamic_thresholds(distance_km):
 # ---------------------
 # Traffic checking
 # ---------------------
-
 def check_route_traffic(origin, destination, baseline=None):
     resp = requests.get(
         "https://maps.googleapis.com/maps/api/directions/json",
@@ -248,7 +273,9 @@ def process_all_routes(include_segments=False):
 
     results = []
     for route in routes:
-        route_id, name, start_lat, start_lng, end_lat, end_lng, last_normal, last_state, historical_json = route
+        route_id, name, start_lat, start_lng, end_lat, end_lng = route['id'], route['name'], route['start_lat'], route['start_lng'], route['end_lat'], route['end_lng']
+        last_normal, last_state, historical_json = route.get('last_normal_time'), route.get('last_state'), route.get('historical_times')
+        
         historical_times = json.loads(historical_json) if historical_json else []
         baseline = calculate_baseline(historical_times)
 
@@ -332,6 +359,22 @@ def get_route_map(route_name, start_lat, start_lng, end_lat, end_lng):
     with open(map_path, "wb") as f:
         f.write(r.content)
     return map_path
+
+# ---------------------
+# Additional functions needed by CLI
+# ---------------------
+@with_db
+def add_route(name, start_lat, start_lng, end_lat, end_lng, conn=None):
+    with conn.cursor() as c:
+        c.execute("""
+            INSERT INTO routes (name, start_lat, start_lng, end_lat, end_lng, last_normal_time, last_state, historical_times)
+            VALUES (%s, %s, %s, %s, %s, NULL, 'Normal', '[]')
+        """, (name, start_lat, start_lng, end_lat, end_lng))
+
+@with_db
+def delete_route(name, conn=None):
+    with conn.cursor() as c:
+        c.execute("DELETE FROM routes WHERE name=%s", (name,))
 
 # ---------------------
 # CLI

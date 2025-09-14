@@ -5,14 +5,15 @@ from pathlib import Path
 
 from traffic_utils import (
     init_db,
-    with_db,
     get_routes,
     update_route_time,
     calculate_baseline,
     check_route_traffic,
     summarize_segments,
     get_route_map,
-    process_all_routes
+    process_all_routes,
+    add_route,
+    delete_route
 )
 
 # ---------------------
@@ -59,7 +60,7 @@ def parse_dms_pair(dms_pair):
 # ---------------------
 # CRUD Routes
 # ---------------------
-def add_route():
+def add_route_cli():
     os.system('cls' if os.name=='nt' else 'clear')
     print(f"{Colors.BLUE}=== Add Route ==={Colors.RESET}\n")
     name = input("Route name (or Enter to cancel): ").strip()
@@ -86,22 +87,8 @@ def add_route():
         input(f"\n{Colors.CYAN}Press Enter to return to menu...{Colors.RESET}")
         return
 
-    # Insert route using PostgreSQL-ready function
-    update_route_time(
-        route_id=None,  # None = new route, handle insertion directly
-        normal_time=None,
-        state="Normal"
-    )
-
-    @with_db
-    def insert_route(name, start_lat, start_lng, end_lat, end_lng, conn=None):
-        with conn.cursor() as c:
-            c.execute("""
-                INSERT INTO routes (name, start_lat, start_lng, end_lat, end_lng, last_normal_time, last_state, historical_times)
-                VALUES (%s,%s,%s,%s,NULL,'Normal','[]')
-            """, (name, start_lat, start_lng, end_lat, end_lng))
-        conn.commit()
-    insert_route(name, start_lat, start_lng, end_lat, end_lng)
+    # Insert route using the function from traffic_utils
+    add_route(name, start_lat, start_lng, end_lat, end_lng)
 
     # Generate route map
     get_route_map(name, start_lat, start_lng, end_lat, end_lng)
@@ -169,12 +156,8 @@ def remove_route():
     if map_path.exists():
         map_path.unlink()
 
-    @with_db
-    def delete_route(route_id, conn=None):
-        with conn.cursor() as c:
-            c.execute("DELETE FROM routes WHERE id=%s", (route_id,))
-        conn.commit()
-    delete_route(route["id"])
+    # Delete route using the function from traffic_utils
+    delete_route(route["name"])
 
     print(f"{Colors.GREEN}✅ Route '{route['name']}' removed.{Colors.RESET}")
     input(f"\n{Colors.CYAN}Press Enter to return to menu...{Colors.RESET}")
@@ -192,7 +175,12 @@ def check_single_route(route_id):
         input(f"\n{Colors.CYAN}Press Enter to return to menu...{Colors.RESET}")
         return
 
-    baseline = calculate_baseline(route["historical_times"] or [])
+    historical_times = []
+    if route.get("historical_times"):
+        import json
+        historical_times = json.loads(route["historical_times"])
+    
+    baseline = calculate_baseline(historical_times)
     result = check_route_traffic(f"{route['start_lat']},{route['start_lng']}", f"{route['end_lat']},{route['end_lng']}", baseline=baseline)
     if not result:
         print(f"{Colors.RED}Traffic check failed.{Colors.RESET}")
@@ -234,7 +222,6 @@ def check_all_routes():
     print("-"*(sum(columns.values())+len(columns)*3-1))
 
     for r in results:
-        update_route_time(r["route_id"], r["total_normal"], r["state"])
         state_color = Colors.RED if r["state"]=="Heavy" else Colors.GREEN if r["state"]=="Normal" else Colors.YELLOW
         print(header_fmt.format(r["name"], f"{state_color}{r['state']}{Colors.RESET}", r["distance"], r["live"], r["delay"]))
 
@@ -254,6 +241,97 @@ def check_all_routes():
             check_single_route(selected_route["route_id"])
 
 # ---------------------
+# Thresholds Management
+# ---------------------
+def show_thresholds():
+    from traffic_utils import get_thresholds, set_thresholds, reset_thresholds
+    
+    while True:
+        os.system('cls' if os.name=='nt' else 'clear')
+        print(f"{Colors.BLUE}=== Traffic Thresholds ==={Colors.RESET}\n")
+        
+        thresholds = get_thresholds()
+        
+        # Display current thresholds
+        print(f"{Colors.CYAN}Current Thresholds:{Colors.RESET}")
+        print(f"{'Distance (km)':<15} {'Route Factor':<15} {'Segment Factor':<15} {'Route Delay':<15} {'Segment Delay':<15}")
+        print("-" * 75)
+        
+        for t in thresholds:
+            print(f"{t['min_km']}-{t['max_km']:<10} {t['factor_total']:<15} {t['factor_step']:<15} {t['delay_total']:<15} {t['delay_step']:<15}")
+        
+        print(f"\n{Colors.YELLOW}[1]{Colors.RESET} Edit thresholds")
+        print(f"{Colors.YELLOW}[2]{Colors.RESET} Reset to defaults")
+        print(f"{Colors.YELLOW}[0]{Colors.RESET} Return to main menu")
+        
+        choice = input("\nSelect option: ").strip()
+        
+        if choice == "0":
+            break
+        elif choice == "1":
+            edit_thresholds(thresholds)
+        elif choice == "2":
+            confirm = input("Reset all thresholds to default values? (y/n): ").strip().lower()
+            if confirm == 'y':
+                reset_thresholds()
+                print(f"{Colors.GREEN}✅ Thresholds reset to defaults.{Colors.RESET}")
+                input(f"\n{Colors.CYAN}Press Enter to continue...{Colors.RESET}")
+
+def edit_thresholds(thresholds):
+    from traffic_utils import set_thresholds
+    
+    os.system('cls' if os.name=='nt' else 'clear')
+    print(f"{Colors.BLUE}=== Edit Thresholds ==={Colors.RESET}\n")
+    
+    for idx, t in enumerate(thresholds):
+        print(f"{Colors.YELLOW}[{idx+1}]{Colors.RESET} {t['min_km']}-{t['max_km']} km")
+    print(f"{Colors.YELLOW}[0]{Colors.RESET} Back to thresholds menu")
+    
+    sel = input("\nSelect threshold to edit: ").strip()
+    if sel == "0":
+        return
+    
+    if not sel.isdigit() or not (1 <= int(sel) <= len(thresholds)):
+        print(f"{Colors.RED}⚠ Invalid selection.{Colors.RESET}")
+        input(f"\n{Colors.CYAN}Press Enter to continue...{Colors.RESET}")
+        return
+    
+    threshold = thresholds[int(sel)-1]
+    
+    print(f"\n{Colors.CYAN}Editing threshold for {threshold['min_km']}-{threshold['max_km']} km routes:{Colors.RESET}")
+    print(f"Current values:")
+    print(f"  Route Factor: {threshold['factor_total']}")
+    print(f"  Segment Factor: {threshold['factor_step']}")  
+    print(f"  Route Delay: {threshold['delay_total']}")
+    print(f"  Segment Delay: {threshold['delay_step']}")
+    print()
+    
+    try:
+        new_factor_total = input(f"Route Factor [{threshold['factor_total']}]: ").strip()
+        if new_factor_total:
+            threshold['factor_total'] = float(new_factor_total)
+        
+        new_factor_step = input(f"Segment Factor [{threshold['factor_step']}]: ").strip()
+        if new_factor_step:
+            threshold['factor_step'] = float(new_factor_step)
+        
+        new_delay_total = input(f"Route Delay [{threshold['delay_total']}]: ").strip()
+        if new_delay_total:
+            threshold['delay_total'] = int(new_delay_total)
+        
+        new_delay_step = input(f"Segment Delay [{threshold['delay_step']}]: ").strip()
+        if new_delay_step:
+            threshold['delay_step'] = int(new_delay_step)
+        
+        set_thresholds(thresholds)
+        print(f"{Colors.GREEN}✅ Threshold updated successfully.{Colors.RESET}")
+        
+    except ValueError as e:
+        print(f"{Colors.RED}⚠ Invalid input: {e}{Colors.RESET}")
+    
+    input(f"\n{Colors.CYAN}Press Enter to continue...{Colors.RESET}")
+
+# ---------------------
 # Main CLI
 # ---------------------
 def main_menu():
@@ -269,8 +347,8 @@ def main_menu():
         print(f"{Colors.YELLOW}[7]{Colors.RESET} Exit")
 
         choice = input("\nSelect option: ").strip()
-        if choice=="1": from traffic_utils import show_thresholds; show_thresholds()
-        elif choice=="2": add_route()
+        if choice=="1": show_thresholds()
+        elif choice=="2": add_route_cli()
         elif choice=="3": list_routes()
         elif choice=="4":
             os.system('cls' if os.name=='nt' else 'clear')
