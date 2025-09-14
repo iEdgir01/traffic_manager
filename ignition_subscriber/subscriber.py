@@ -43,9 +43,8 @@ class IgnitionMonitor:
         self.ignition_state = True
         print(f"IGNITION: ON at {time.strftime('%Y-%m-%d %H:%M:%S')}")
         try:
-            # Delegate everything to the notify module
-            post_traffic_alerts()
             print("INFO: Traffic processing started")
+            post_traffic_alerts()
         except Exception as e:
             print(f"ERROR: Traffic processing failed: {e}")
 
