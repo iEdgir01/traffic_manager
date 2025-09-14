@@ -2,19 +2,10 @@ import os
 import json
 import time
 import threading
+import asyncio
 import paho.mqtt.client as mqtt
-from concurrent.futures import ThreadPoolExecutor
-from discord_bot.discord_notify import post_traffic_alerts
+from discord_bot.discord_notify import post_traffic_alerts_async
 
-# ----------------------------
-# Thread pool for traffic alerts
-# ----------------------------
-
-traffic_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="TrafficAlertsWorker")
-
-# ----------------------------
-# Ignition Monitor Class
-# ----------------------------
 class IgnitionMonitor:
     def __init__(self):
         self.mqtt_broker = os.getenv("MQTT_BROKER")
@@ -28,6 +19,14 @@ class IgnitionMonitor:
         self.client = mqtt.Client()
         self.client.on_connect = self.on_connect
         self.client.on_message = self.on_message
+
+        # Async queue for ignition events
+        self.queue = asyncio.Queue()
+        try:
+            self.loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self.loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.loop)
 
     # ----------------------------
     # MQTT callbacks
@@ -46,48 +45,42 @@ class IgnitionMonitor:
             ignition_on = payload.get("Ignition On", False)
             self.last_msg_time = time.time()
 
-            if ignition_on and not self.ignition_state:
-                self._handle_ignition_on()
+            if ignition_on:
+                # Put ignition event into queue
+                if self.loop.is_running():
+                    asyncio.run_coroutine_threadsafe(self.queue.put(time.time()), self.loop)
         except json.JSONDecodeError as e:
             print(f"ERROR: Failed to decode JSON message: {msg.payload} - {e}")
         except Exception as e:
             print(f"ERROR: Processing message failed: {e}")
 
     # ----------------------------
-    # Ignition handling
+    # Process ignition events
     # ----------------------------
-    def _handle_ignition_on(self):
-        self.ignition_state = True
-        self.ignition_on_time = time.time()
-        print(f"IGNITION: ON at {time.strftime('%Y-%m-%d %H:%M:%S')}")
-
-        # Only trigger if within 5 mins of ignition event
-        if time.time() - self.ignition_on_time <= 300:
-
-            def run_alerts_safe():
+    async def _process_queue(self):
+        while True:
+            ignition_time = await self.queue.get()
+            # Only process if within 5 minutes of ignition event
+            if time.time() - ignition_time <= 300:
+                print(f"IGNITION: ON at {time.strftime('%Y-%m-%d %H:%M:%S')}")
                 try:
-                    print("INFO: Traffic processing started")
-                    post_traffic_alerts()
+                    await post_traffic_alerts_async()
                 except Exception as e:
                     print(f"ERROR: Traffic processing failed: {e}")
-
-            # Submit to thread pool instead of creating a new thread each time
-            traffic_executor.submit(run_alerts_safe)
-
-        else:
-            print("INFO: Ignition ON too old, skipping traffic processing")
+            else:
+                print("INFO: Ignition ON too old, skipping traffic processing")
+            self.queue.task_done()
 
     # ----------------------------
     # Monitor ignition OFF / timeout
     # ----------------------------
     def _monitor_ignition(self):
         while True:
-            if self.ignition_state and self.last_msg_time:
-                if time.time() - self.last_msg_time > self.timeout:
-                    self.ignition_state = False
-                    print(f"IGNITION: OFF at {time.strftime('%Y-%m-%d %H:%M:%S')} (timeout)")
-                    self.last_msg_time = None
-                    self.ignition_on_time = None
+            if self.last_msg_time and (time.time() - self.last_msg_time > self.timeout):
+                self.ignition_state = False
+                print(f"IGNITION: OFF at {time.strftime('%Y-%m-%d %H:%M:%S')} (timeout)")
+                self.last_msg_time = None
+                self.ignition_on_time = None
             time.sleep(2)
 
     # ----------------------------
@@ -96,8 +89,13 @@ class IgnitionMonitor:
     def start(self):
         if not all([self.mqtt_broker, self.mqtt_port, self.mqtt_topic]):
             raise ValueError("Missing MQTT configuration")
-        self.client.connect(self.mqtt_broker, self.mqtt_port, 60)
+
+        # Start queue processor
+        threading.Thread(target=lambda: self.loop.run_until_complete(self._process_queue()), daemon=True).start()
+        # Start OFF monitor
         threading.Thread(target=self._monitor_ignition, daemon=True).start()
+        # Start MQTT loop
+        self.client.connect(self.mqtt_broker, self.mqtt_port, 60)
         self.client.loop_forever()
 
 

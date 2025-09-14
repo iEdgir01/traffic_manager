@@ -1,9 +1,10 @@
 import os
 import json
-import discord
-import requests
+import asyncio
+from datetime import datetime
+import aiohttp
 from traffic_utils import (
-    with_db, summarize_segments, init_db, get_routes,
+    with_db, summarize_segments, get_routes,
     calculate_baseline, check_route_traffic, update_route_time
 )
 
@@ -13,8 +14,12 @@ if not WEBHOOK_URL:
 
 
 # ---------------------
-# DB helpers
+# DB helpers wrapped for async
 # ---------------------
+async def run_in_thread(fn, *args, **kwargs):
+    return await asyncio.to_thread(fn, *args, **kwargs)
+
+
 @with_db
 def get_last_state(route_id, conn=None):
     cursor = conn.cursor()
@@ -31,77 +36,81 @@ def update_last_state(route_id, state, conn=None):
 
 
 # ---------------------
-# Traffic check & posting
+# Async traffic alert posting
 # ---------------------
-def post_traffic_alerts():
-    """
-    Fetches all routes, checks traffic, and posts alerts to Discord.
-    Logs meaningful messages while processing, including progress.
-    """
+async def post_traffic_alerts_async():
     try:
         print("TRAFFIC: Starting processing of all routes...")
-        results = get_routes()
-        if not results:
+        routes = await run_in_thread(get_routes)
+
+        if not routes:
             print("TRAFFIC: No routes found in the database.")
             return
 
         alerts_posted = 0
-        print(f"TRAFFIC: Total routes to process: {len(results)}\n")
+        print(f"TRAFFIC: Total routes to process: {len(routes)}\n")
 
-        for route in results:
-            try:
-                route_id, name, start_lat, start_lng, end_lat, end_lng, last_normal, last_state, historical_json = route
-                print(f"TRAFFIC: Processing route '{name}'")
+        async with aiohttp.ClientSession() as session:
+            for route in routes:
+                try:
+                    route_id, name, start_lat, start_lng, end_lat, end_lng, last_normal, last_state, historical_json = route
+                    print(f"TRAFFIC: Processing route '{name}'")
 
-                # Calculate baseline
-                baseline = calculate_baseline([] if not historical_json else json.loads(historical_json))
-                print(f"TRAFFIC: Baseline calculated for {name}")
+                    historical_data = [] if not historical_json else json.loads(historical_json)
+                    baseline = calculate_baseline(historical_data)
+                    print(f"TRAFFIC: Baseline calculated for {name}")
 
-                # Check traffic
-                traffic = check_route_traffic(f"{start_lat},{start_lng}", f"{end_lat},{end_lng}", baseline)
-                if not traffic:
-                    print(f"TRAFFIC: No traffic data returned for {name}")
-                    continue
-
-                current_state = traffic["state"]
-                prev_state = get_last_state(route_id)
-
-                # Determine if alert should be posted
-                should_post = False
-                if current_state.lower() == "heavy":
-                    should_post = True
-                elif prev_state and prev_state.lower() == "heavy" and current_state.lower() == "normal":
-                    should_post = True
-
-                if should_post:
-                    color = 0x00FF00 if current_state.lower() == "normal" else 0xFF0000
-                    embed = discord.Embed(
-                        title=f"Traffic Status - {name}",
-                        color=color,
-                        timestamp=discord.utils.utcnow()
+                    # Run traffic check in a thread (blocking function)
+                    traffic = await run_in_thread(
+                        check_route_traffic,
+                        f"{start_lat},{start_lng}",
+                        f"{end_lat},{end_lng}",
+                        baseline
                     )
-                    embed.add_field(name="State", value=current_state, inline=True)
-                    embed.add_field(name="Distance", value=f"{traffic['distance_km']:.2f} km", inline=True)
-                    embed.add_field(name="Live Time", value=f"{traffic['total_live']} min", inline=True)
-                    embed.add_field(name="Normal Time", value=f"{traffic['total_normal']} min", inline=True)
-                    embed.add_field(name="Delay", value=f"{traffic['total_delay']} min", inline=True)
-                    segments_summary = summarize_segments(traffic['heavy_segments']) or 'None'
-                    embed.add_field(name="Heavy Segments", value=segments_summary, inline=False)
+                    if not traffic:
+                        print(f"TRAFFIC: No traffic data returned for {name}")
+                        continue
 
-                    payload = {"embeds": [embed.to_dict()]}
-                    response = requests.post(WEBHOOK_URL, json=payload, timeout=10)
-                    if response.status_code not in (200, 204):
-                        print(f"❌ Failed to post alert for {name}: {response.status_code} - {response.text}")
-                    else:
-                        print(f"✅ Alert posted for {name}")
-                        alerts_posted += 1
+                    current_state = traffic["state"]
+                    prev_state = await run_in_thread(get_last_state, route_id)
 
-                # Update DB regardless of whether an alert was posted
-                update_route_time(route_id, traffic["total_normal"], current_state)
-                update_last_state(route_id, current_state)
+                    # Determine if alert should be posted
+                    should_post = False
+                    if current_state.lower() == "heavy":
+                        should_post = True
+                    elif prev_state and prev_state.lower() == "heavy" and current_state.lower() == "normal":
+                        should_post = True
 
-            except Exception as e:
-                print(f"❌ Error processing route '{route[1] if len(route) > 1 else 'Unknown'}': {e}")
+                    if should_post:
+                        color = 0x00FF00 if current_state.lower() == "normal" else 0xFF0000
+                        embed = {
+                            "title": f"Traffic Status - {name}",
+                            "color": color,
+                            "timestamp": datetime.utcnow().isoformat(),
+                            "fields": [
+                                {"name": "State", "value": current_state, "inline": True},
+                                {"name": "Distance", "value": f"{traffic['distance_km']:.2f} km", "inline": True},
+                                {"name": "Live Time", "value": f"{traffic['total_live']} min", "inline": True},
+                                {"name": "Normal Time", "value": f"{traffic['total_normal']} min", "inline": True},
+                                {"name": "Delay", "value": f"{traffic['total_delay']} min", "inline": True},
+                                {"name": "Heavy Segments", "value": summarize_segments(traffic['heavy_segments']) or 'None', "inline": False},
+                            ]
+                        }
+
+                        async with session.post(WEBHOOK_URL, json={"embeds": [embed]}, timeout=10) as resp:
+                            if resp.status not in (200, 204):
+                                text = await resp.text()
+                                print(f"❌ Failed to post alert for {name}: {resp.status} - {text}")
+                            else:
+                                print(f"✅ Alert posted for {name}")
+                                alerts_posted += 1
+
+                    # Update DB asynchronously
+                    await run_in_thread(update_route_time, route_id, traffic["total_normal"], current_state)
+                    await run_in_thread(update_last_state, route_id, current_state)
+
+                except Exception as e:
+                    print(f"❌ Error processing route '{route[1] if len(route) > 1 else 'Unknown'}': {e}")
 
         if alerts_posted == 0:
             print("TRAFFIC: No traffic alerts were necessary")
@@ -117,4 +126,4 @@ def post_traffic_alerts():
 # ---------------------
 if __name__ == "__main__":
     print("Starting traffic alert processing...")
-    post_traffic_alerts()
+    asyncio.run(post_traffic_alerts_async())
