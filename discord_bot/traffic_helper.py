@@ -25,9 +25,6 @@ from PIL import Image, ImageDraw, ImageFont
 from io import BytesIO
 import concurrent.futures
 from pathlib import Path
-import atexit
-import signal
-import sys
 
 logging.basicConfig(level=logging.INFO)
 
@@ -101,20 +98,6 @@ def create_bot_instance():
 
     return bot
 
-async def hard_shutdown():
-    """Async shutdown logic (bot + thread pool)"""
-    global bot
-    logging.info("🔻 Hard shutdown starting...")
-
-    try:
-        if bot and not bot.is_closed():
-            await bot.close()
-    except Exception as e:
-        logging.warning(f"Error closing bot: {e}")
-
-    shutdown_thread_pool(wait=False)
-    logging.info("🔻 Hard shutdown complete")
-
 # Standardized colors and styles
 class BotStyles:
     # Button styles
@@ -155,30 +138,6 @@ async def run_in_thread(func, *args, **kwargs):
             pool = create_thread_pool()
             return await loop.run_in_executor(pool, func, *args, **kwargs)
         raise
-
-async def graceful_cleanup():
-    """Graceful cleanup without permanent shutdown"""
-    global _shutting_down, thread_pool
-    
-    if _shutting_down:
-        return
-        
-    logging.info("Starting graceful cleanup...")
-    
-    try:
-        # Cancel running tasks but don't shut down permanently
-        current_task = asyncio.current_task()
-        tasks = [task for task in asyncio.all_tasks() if task != current_task and not task.done()]
-        
-        for task in tasks:
-            if not task.cancelled():
-                task.cancel()
-                
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-            
-    except Exception as e:
-        logging.error(f"Error during graceful cleanup: {e}")
 
 async def hard_shutdown():
     """Hard shutdown for permanent termination"""
@@ -418,18 +377,6 @@ def sync_cleanup():
     except Exception as e:
         logging.error(f"Error during sync cleanup: {e}")
         shutdown_thread_pool(wait=False)
-
-def signal_handler(signum, frame):
-    logging.info(f"Received signal {signum}")
-    
-    if signum == signal.SIGTERM:
-        # Docker/system shutdown - permanent
-        force_permanent_shutdown()
-    else:
-        # Other signals - allow restart
-        sync_cleanup()
-    
-    sys.exit(0)
 
 async def cleanup_for_restart():
     """Clean up resources but keep the bot restartable"""
@@ -1841,19 +1788,20 @@ def attach_bot_events(bot):
     # Only cleanup on actual disconnect
     @bot.event
     async def on_disconnect():
-        await graceful_cleanup()
+        await soft_cleanup()
 
 # =========================
 # Bot runner with restart
 # =========================
 async def run_discord_bot():
-    """Enhanced bot runner with limited internal restarts"""
+    """Enhanced bot runner with better error handling"""
     global bot, _shutting_down, _force_permanent_shutdown
 
-    max_restarts = 5  # Internal restart limit
+    max_restarts = 5
     restart_count = 0
+    connection_timeout_count = 0  # Track connection timeouts specifically
 
-    # Reset the temporary shutdown flag (but respect permanent shutdown)
+    # Reset flags for this session (unless permanent shutdown)
     if not _force_permanent_shutdown:
         _shutting_down = False
 
@@ -1862,54 +1810,59 @@ async def run_discord_bot():
             # Clean up any previous instance
             if bot and not bot.is_closed():
                 try:
-                    await bot.close()
-                except Exception as e:
-                    logging.warning(f"Error closing previous bot instance: {e}")
+                    await asyncio.wait_for(bot.close(), timeout=5.0)
+                except (asyncio.TimeoutError, Exception) as e:
+                    logging.warning(f"Error closing previous bot: {e}")
                     
             bot = create_bot_instance()
             attach_bot_events(bot)
 
-            # Ensure we have a working thread pool
+            # Ensure thread pool exists
             ensure_thread_pool()
             
-            logging.info(f"Starting Discord bot (internal attempt {restart_count + 1}/{max_restarts})")
-            await bot.start(TOKEN)
+            logging.info(f"Starting Discord bot (attempt {restart_count + 1}/{max_restarts})")
             
-            # If we get here, bot started successfully but then disconnected
+            # Use timeout for the connection attempt
+            await asyncio.wait_for(bot.start(TOKEN), timeout=120.0)  # 2 minute timeout
+            
+            # If we get here, bot disconnected normally
             logging.info("Bot disconnected normally")
             break
 
-        except asyncio.CancelledError:
-            logging.warning(f"Bot connection was cancelled (attempt {restart_count + 1})")
+        except asyncio.TimeoutError:
+            connection_timeout_count += 1
             restart_count += 1
+            logging.error(f"Bot connection timed out (attempt {restart_count})")
             
-            if restart_count < max_restarts and not _shutting_down and not _force_permanent_shutdown:
-                logging.info("Retrying connection in 5 seconds...")
-                await asyncio.sleep(5)
-                
-                # Clean up for retry
+            # For connection timeouts, wait longer between retries
+            if restart_count < max_restarts and not _shutting_down:
+                wait_time = min(60, 10 * connection_timeout_count)  # Progressive backoff
+                logging.info(f"Waiting {wait_time}s before retry due to connection timeout...")
+                await asyncio.sleep(wait_time)
                 await cleanup_for_restart()
-            else:
-                logging.error("Max internal restart attempts reached")
-                break
+
+        except asyncio.CancelledError:
+            logging.warning("Bot start was cancelled")
+            break  # Don't retry on cancellation
                 
         except Exception as e:
             restart_count += 1
-            logging.error(f"Bot crashed (internal attempt {restart_count}/{max_restarts}): {e}")
+            error_msg = str(e)
             
-            if restart_count < max_restarts and not _shutting_down and not _force_permanent_shutdown:
-                logging.info("Restarting bot in 5 seconds...")
-                await asyncio.sleep(5)
-                
-                # Clean up for retry
-                await cleanup_for_restart()
+            # Check if this is a network-related error
+            if any(keyword in error_msg.lower() for keyword in ['resolve', 'connection', 'timeout', 'network']):
+                logging.error(f"Network error (attempt {restart_count}): {e}")
+                if restart_count < max_restarts and not _shutting_down:
+                    wait_time = min(120, 30 * restart_count)  # Longer wait for network issues
+                    logging.info(f"Waiting {wait_time}s before retry due to network error...")
+                    await asyncio.sleep(wait_time)
             else:
-                logging.error("Max internal restart attempts reached")
-                break
+                logging.error(f"Bot crashed (attempt {restart_count}): {e}")
+                if restart_count < max_restarts and not _shutting_down:
+                    await asyncio.sleep(10)
+            
+            if restart_count < max_restarts and not _shutting_down:
+                await cleanup_for_restart()
 
-    # Only do hard shutdown if permanent shutdown is requested
-    if _force_permanent_shutdown:
-        await hard_shutdown()
-    else:
-        # Just clean up this session
-        await soft_cleanup()
+    # Final cleanup
+    await soft_cleanup()
