@@ -2,6 +2,7 @@ import os
 import json
 import time
 import threading
+import asyncio
 import paho.mqtt.client as mqtt
 from discord_bot.discord_notify import post_traffic_alerts
 
@@ -42,18 +43,28 @@ class IgnitionMonitor:
 
     def _handle_ignition_on(self):
         self.ignition_state = True
-        self.ignition_on_time = time.time()  # NEW
+        self.ignition_on_time = time.time()
         print(f"IGNITION: ON at {time.strftime('%Y-%m-%d %H:%M:%S')}")
 
         # Only trigger if within 5 mins of ignition event
         if time.time() - self.ignition_on_time <= 300:
-            try:
-                print("INFO: Traffic processing started")
-                post_traffic_alerts()
-            except Exception as e:
-                print(f"ERROR: Traffic processing failed: {e}")
+
+            def run_alerts_safe():
+                try:
+                    print("INFO: Traffic processing started")
+                    post_traffic_alerts()
+                except Exception as e:
+                    print(f"ERROR: Traffic processing failed: {e}")
+
+            # Run in a separate daemon thread so it doesn't block the MQTT loop or Discord bot
+            threading.Thread(
+                target=run_alerts_safe,
+                daemon=True,
+                name="TrafficAlertsWorker"
+            ).start()
         else:
             print("INFO: Ignition ON too old, skipping traffic processing")
+
 
     def _monitor_ignition(self):
         while True:
