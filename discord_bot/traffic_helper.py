@@ -1735,6 +1735,7 @@ class ResetThresholdsButton(Button):
 # --------------------
 class MainMenu(View):
     def __init__(self):
+        super().__init__(timeout=None)
         self.add_item(AddRouteButton())
         self.add_item(ListRoutesButton())
         self.add_item(RemoveRouteButton())
