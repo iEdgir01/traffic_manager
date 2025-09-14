@@ -6,7 +6,7 @@ import sys
 import signal
 import atexit
 from ignition_subscriber.subscriber import IgnitionMonitor
-from discord_bot.traffic_helper import run_discord_bot, force_permanent_shutdown, sync_cleanup
+from discord_bot.traffic_helper import run_discord_bot, force_permanent_shutdown
 
 # Configure logging
 logging.basicConfig(
