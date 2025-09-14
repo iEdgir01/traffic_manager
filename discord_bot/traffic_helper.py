@@ -558,7 +558,7 @@ class BackToMenuButton(Button):
                 content="Traffic Manager Menu",
                 embed=None,
                 attachments=[],
-                view=MAIN_MENU_VIEW
+                view=get_main_menu_view()
             )
         except (discord.NotFound, discord.HTTPException):
             pass
@@ -652,7 +652,7 @@ class RoutesPagination(View):
                 content="Traffic Manager Menu",
                 embed=None,
                 attachments=[],
-                view=MainMenu()
+                view=get_main_menu_view()
             )
             self.stop()
         except (discord.NotFound, discord.HTTPException):
@@ -1732,6 +1732,10 @@ class ResetThresholdsButton(Button):
 # --------------------
 # Main Menu
 # --------------------
+def get_main_menu_view():
+    """Return a new MainMenu view instance."""
+    return MainMenu()
+
 class MainMenu(View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -1740,8 +1744,6 @@ class MainMenu(View):
         self.add_item(RemoveRouteButton())
         self.add_item(TrafficStatusMainButton())
         self.add_item(ThresholdsButton())
-
-MAIN_MENU_VIEW = MainMenu()
 
 # --------------------
 # Bot events & commands
@@ -1755,7 +1757,7 @@ def attach_bot_events(bot):
 
     @bot.command()
     async def menu(ctx):
-        await ctx.send("Traffic Manager Menu", view=MAIN_MENU_VIEW)
+        await ctx.send("Traffic Manager Menu", view=get_main_menu_view())
 
     # Handle errors gracefully without shutting down
     @bot.event
