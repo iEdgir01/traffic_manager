@@ -3,7 +3,7 @@ import json
 import discord
 import requests
 from traffic_utils import (
-    DB_PATH, with_db, summarize_segments, init_db, get_routes, 
+    with_db, summarize_segments, init_db, get_routes, 
     calculate_baseline, check_route_traffic, update_route_time
 )
 

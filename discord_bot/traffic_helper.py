@@ -25,6 +25,9 @@ from PIL import Image, ImageDraw, ImageFont
 from io import BytesIO
 import concurrent.futures
 from pathlib import Path
+import atexit
+import signal
+import sys
 
 logging.basicConfig(level=logging.INFO)
 
@@ -42,13 +45,74 @@ MAP_DIR.mkdir(parents=True, exist_ok=True)
 
 logging.info(f"Using DB at: {DB_PATH}")
 
-# Intents & bot
-intents = discord.Intents.default()
-intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+# Thread pool for blocking operations - make it recreatable
+bot = None
+thread_pool = None
+_shutting_down = False
 
-# Thread pool for blocking operations
-thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+# =========================
+# Thread pool management
+# =========================
+def create_thread_pool():
+    """Create or recreate the thread pool"""
+    global thread_pool
+    if thread_pool and not thread_pool._shutdown:
+        return thread_pool
+    thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+    return thread_pool
+
+def ensure_thread_pool():
+    """Ensure thread pool exists and is not shut down"""
+    global thread_pool
+    if thread_pool is None or thread_pool._shutdown:
+        thread_pool = create_thread_pool()
+    return thread_pool
+
+def shutdown_thread_pool(wait=False):
+    """Shutdown the thread pool if active"""
+    global thread_pool
+    if thread_pool and not thread_pool._shutdown:
+        try:
+            thread_pool.shutdown(wait=wait, cancel_futures=True)
+        except TypeError:
+            # Python < 3.9 doesn’t support cancel_futures
+            thread_pool.shutdown(wait=wait)
+        finally:
+            thread_pool = None
+
+# =========================
+# Bot management
+# =========================
+def create_bot_instance():
+    """Factory for creating a fresh bot instance"""
+    intents = discord.Intents.default()
+    intents.message_content = True
+
+    bot = commands.Bot(command_prefix="!", intents=intents)
+
+    @bot.event
+    async def on_ready():
+        logging.info(f"✅ Logged in as {bot.user} (ID: {bot.user.id})")
+
+    @bot.command()
+    async def ping(ctx):
+        await ctx.send("Pong!")
+
+    return bot
+
+async def hard_shutdown():
+    """Async shutdown logic (bot + thread pool)"""
+    global bot
+    logging.info("🔻 Hard shutdown starting...")
+
+    try:
+        if bot and not bot.is_closed():
+            await bot.close()
+    except Exception as e:
+        logging.warning(f"Error closing bot: {e}")
+
+    shutdown_thread_pool(wait=False)
+    logging.info("🔻 Hard shutdown complete")
 
 # Standardized colors and styles
 class BotStyles:
@@ -71,40 +135,132 @@ class BotStyles:
 # ---------------------
 async def run_in_thread(func, *args, **kwargs):
     """Run blocking function in thread pool"""
+    if _shutting_down:
+        raise RuntimeError("Bot is shutting down")
+    
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(thread_pool, func, *args, **kwargs)
+    if loop.is_closed():
+        raise RuntimeError("Event loop is closed")
+    
+    # Ensure we have a working thread pool
+    pool = ensure_thread_pool()
+    
+    try:
+        return await loop.run_in_executor(pool, func, *args, **kwargs)
+    except RuntimeError as e:
+        if "cannot schedule new futures after shutdown" in str(e):
+            # Thread pool was shut down, try to recreate it
+            logging.warning("Thread pool was shut down, recreating...")
+            pool = create_thread_pool()
+            return await loop.run_in_executor(pool, func, *args, **kwargs)
+        raise
 
+async def graceful_cleanup():
+    """Graceful cleanup without permanent shutdown"""
+    global _shutting_down, thread_pool
+    
+    if _shutting_down:
+        return
+        
+    logging.info("Starting graceful cleanup...")
+    
+    try:
+        # Cancel running tasks but don't shut down permanently
+        current_task = asyncio.current_task()
+        tasks = [task for task in asyncio.all_tasks() if task != current_task and not task.done()]
+        
+        for task in tasks:
+            if not task.cancelled():
+                task.cancel()
+                
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+            
+    except Exception as e:
+        logging.error(f"Error during graceful cleanup: {e}")
+
+async def hard_shutdown():
+    """Hard shutdown for actual bot termination"""
+    global _shutting_down, thread_pool
+    
+    _shutting_down = True
+    logging.info("Hard shutdown initiated...")
+    
+    try:
+        await graceful_cleanup()
+        
+        # Now actually shut down the thread pool
+        if thread_pool and not thread_pool._shutdown:
+            thread_pool.shutdown(wait=False)
+            
+    except Exception as e:
+        logging.error(f"Error during hard shutdown: {e}")
+
+# Error recovery wrapper
+async def with_error_recovery(coro_func, *args, **kwargs):
+    """Wrapper to handle errors and attempt recovery"""
+    max_retries = 2
+    
+    for attempt in range(max_retries + 1):
+        try:
+            return await coro_func(*args, **kwargs)
+        except RuntimeError as e:
+            if "shutdown" in str(e).lower() or "closed" in str(e).lower():
+                if attempt < max_retries:
+                    logging.warning(f"Attempt {attempt + 1} failed, retrying after recovery...")
+                    await asyncio.sleep(1)  # Brief pause
+                    continue
+                else:
+                    logging.error("Max retries reached, operation failed")
+                    raise
+            else:
+                raise
+        except Exception as e:
+            if attempt < max_retries:
+                logging.warning(f"Attempt {attempt + 1} failed with {type(e).__name__}: {e}, retrying...")
+                await asyncio.sleep(1)
+                continue
+            else:
+                raise
+
+# Updated async wrappers with error recovery
 async def async_get_routes():
-    """Async wrapper for get_routes"""
-    return await run_in_thread(get_routes)
+    """Async wrapper for get_routes with error recovery"""
+    return await with_error_recovery(lambda: run_in_thread(get_routes))
 
 async def async_add_route(name, start_lat, start_lng, end_lat, end_lng):
-    """Async wrapper for adding route and generating map"""
-    return await run_in_thread(register_route_and_generate_map, name, start_lat, start_lng, end_lat, end_lng)
+    """Async wrapper for adding route with error recovery"""
+    return await with_error_recovery(
+        lambda: run_in_thread(register_route_and_generate_map, name, start_lat, start_lng, end_lat, end_lng)
+    )
 
 async def async_delete_route(name):
-    """Async wrapper for deleting route"""
-    return await run_in_thread(delete_route, name)
+    """Async wrapper for deleting route with error recovery"""
+    return await with_error_recovery(lambda: run_in_thread(delete_route, name))
 
 async def async_get_route_map(name, start_lat, start_lng, end_lat, end_lng):
-    """Async wrapper for getting route map"""
-    return await run_in_thread(get_route_map, name, start_lat, start_lng, end_lat, end_lng)
+    """Async wrapper for getting route map with error recovery"""
+    return await with_error_recovery(
+        lambda: run_in_thread(get_route_map, name, start_lat, start_lng, end_lat, end_lng)
+    )
 
 async def async_check_traffic(start_coord, end_coord, baseline=None):
-    """Async wrapper for traffic checking"""
-    return await run_in_thread(check_route_traffic, start_coord, end_coord, baseline)
+    """Async wrapper for traffic checking with error recovery"""
+    return await with_error_recovery(
+        lambda: run_in_thread(check_route_traffic, start_coord, end_coord, baseline)
+    )
 
 async def async_get_thresholds():
-    """Async wrapper for get_thresholds"""
-    return await run_in_thread(get_thresholds)
+    """Async wrapper for get_thresholds with error recovery"""
+    return await with_error_recovery(lambda: run_in_thread(get_thresholds))
 
 async def async_set_thresholds(thresholds):
-    """Async wrapper for set_thresholds"""
-    return await run_in_thread(set_thresholds, thresholds)
+    """Async wrapper for set_thresholds with error recovery"""
+    return await with_error_recovery(lambda: run_in_thread(set_thresholds, thresholds))
 
 async def async_reset_thresholds():
-    """Async wrapper for reset_thresholds"""
-    return await run_in_thread(reset_thresholds)
+    """Async wrapper for reset_thresholds with error recovery"""
+    return await with_error_recovery(lambda: run_in_thread(reset_thresholds))
 
 # ---------------------
 # Loading state helpers
@@ -121,11 +277,18 @@ def create_loading_embed(title: str, description: str = "Please wait...") -> dis
 
 async def show_loading_state(interaction: discord.Interaction, title: str, description: str = "Please wait..."):
     """Show loading state to user"""
-    embed = create_loading_embed(title, description)
-    if interaction.response.is_done():
-        await interaction.edit_original_response(embed=embed, view=None, attachments=[])
-    else:
-        await interaction.response.edit_message(embed=embed, view=None, attachments=[])
+    if _shutting_down:
+        return
+    
+    try:
+        embed = create_loading_embed(title, description)
+        if interaction.response.is_done():
+            await interaction.edit_original_response(embed=embed, view=None, attachments=[])
+        else:
+            await interaction.response.edit_message(embed=embed, view=None, attachments=[])
+    except (discord.NotFound, discord.HTTPException, RuntimeError):
+        # Interaction expired or bot is shutting down
+        pass
 
 # ---------------------
 # DB wrapper (keeping existing)
@@ -221,7 +384,7 @@ def haversine_distance(lat1, lon1, lat2, lon2):
     return R * c
 
 # --------------------
-# Blocking processing (keeping existing but making it properly async-compatible)
+# Blocking processing
 # --------------------
 def register_route_and_generate_map(name, start_lat, start_lng, end_lat, end_lng):
     init_db()
@@ -234,6 +397,36 @@ def register_route_and_generate_map(name, start_lat, start_lng, end_lat, end_lng
     map_path = get_route_map(name, start_lat, start_lng, end_lat, end_lng)
     return map_path
 
+# =========================
+# Signal handling
+# =========================
+def sync_cleanup():
+    global _shutting_down
+    if _shutting_down:
+        return
+    _shutting_down = True
+
+    logging.info("⚠️  Synchronous cleanup triggered...")
+
+    try:
+        loop = asyncio.get_event_loop()
+        if not loop.is_closed():
+            loop.run_until_complete(hard_shutdown())
+    except RuntimeError:
+        logging.info("No active loop; shutting down thread pool only")
+        shutdown_thread_pool(wait=False)
+    except Exception as e:
+        logging.error(f"Error during sync cleanup: {e}")
+        shutdown_thread_pool(wait=False)
+
+def signal_handler(signum, frame):
+    logging.info(f"Received signal {signum}, initiating shutdown...")
+    sync_cleanup()
+    sys.exit(0)
+
+signal.signal(signal.SIGTERM, signal_handler)
+signal.signal(signal.SIGINT, signal_handler)
+
 # --------------------
 # Add Route modal + button
 # --------------------
@@ -242,7 +435,6 @@ class AddRouteModal(discord.ui.Modal):
         super().__init__(title="Add Route")
         self.original_message = original_message
 
-        # Text inputs
         self.route_name = discord.ui.TextInput(
             label="Route name",
             placeholder="Sea View - Umbilo [R107]",
@@ -262,78 +454,93 @@ class AddRouteModal(discord.ui.Modal):
         self.add_item(self.end_coord)
 
     async def on_submit(self, interaction: discord.Interaction):
+        if _shutting_down:
+            return
+
         route_name = str(self.route_name)
         start_raw = str(self.start_coord)
         end_raw = str(self.end_coord)
 
         if not route_name:
-            await interaction.response.send_message("Route name is required.", ephemeral=True)
+            try:
+                await interaction.response.send_message("Route name is required.", ephemeral=True)
+            except (discord.NotFound, discord.HTTPException):
+                pass
             return
 
-        # Show loading state immediately
-        await show_loading_state(interaction, "Adding Route", "Parsing coordinates and generating map...")
-
         try:
-            # Parse coordinates asynchronously
+            await show_loading_state(interaction, "Adding Route", "Parsing coordinates and generating map...")
+            
             start_lat, start_lng = await run_in_thread(parse_dms_pair, start_raw)
             end_lat, end_lng = await run_in_thread(parse_dms_pair, end_raw)
-        except Exception as e:
+            
+            map_path = await async_add_route(route_name, start_lat, start_lng, end_lat, end_lng)
+            
+            distance_km = haversine_distance(start_lat, start_lng, end_lat, end_lng)
+
             embed = discord.Embed(
-                title="Coordinate Parsing Error",
-                description=f"Could not parse coordinates: {e}",
+                title=f"Route Added - {route_name}",
+                color=BotStyles.SUCCESS_COLOR,
+                timestamp=datetime.utcnow()
+            )
+            embed.add_field(name="Distance", value=f"{distance_km:.2f} km", inline=True)
+            embed.add_field(name="Start", value=f"{start_lat:.6f}, {start_lng:.6f}", inline=False)
+            embed.add_field(name="End", value=f"{end_lat:.6f}, {end_lng:.6f}", inline=False)
+
+            file = None
+            if os.path.isfile(map_path):
+                filename = os.path.basename(map_path)
+                file = discord.File(map_path, filename=filename)
+                embed.set_image(url=f"attachment://{filename}")
+
+            await interaction.edit_original_response(embed=embed, attachments=[file] if file else [], view=BackToMenuView())
+            
+        except RuntimeError as e:
+            if "shutdown" in str(e).lower():
+                return
+            embed = discord.Embed(
+                title="System Error",
+                description=f"System error: {e}",
                 color=BotStyles.ERROR_COLOR
             )
-            await interaction.edit_original_response(embed=embed, view=BackToMenuView())
-            return
-
-        try:
-            # Add route and generate map asynchronously
-            map_path = await async_add_route(route_name, start_lat, start_lng, end_lat, end_lng)
+            try:
+                await interaction.edit_original_response(embed=embed, view=BackToMenuView())
+            except (discord.NotFound, discord.HTTPException):
+                pass
         except Exception as e:
             embed = discord.Embed(
-                title="Route Addition Failed",
+                title="Route Addition Failed" if "Coordinate" not in str(e) else "Coordinate Parsing Error",
                 description=f"Failed to add route: {e}",
                 color=BotStyles.ERROR_COLOR
             )
-            await interaction.edit_original_response(embed=embed, view=BackToMenuView())
-            return
-
-        distance_km = haversine_distance(start_lat, start_lng, end_lat, end_lng)
-
-        embed = discord.Embed(
-            title=f"Route Added - {route_name}",
-            color=BotStyles.SUCCESS_COLOR,
-            timestamp=datetime.utcnow()
-        )
-        embed.add_field(name="Distance", value=f"{distance_km:.2f} km", inline=True)
-        embed.add_field(name="Start", value=f"{start_lat:.6f}, {start_lng:.6f}", inline=False)
-        embed.add_field(name="End", value=f"{end_lat:.6f}, {end_lng:.6f}", inline=False)
-
-        file = None
-        if os.path.isfile(map_path):
-            filename = os.path.basename(map_path)
-            file = discord.File(map_path, filename=filename)
-            embed.set_image(url=f"attachment://{filename}")
-
-        # Update with final result
-        if file:
-            await interaction.edit_original_response(embed=embed, attachments=[file], view=BackToMenuView())
-        else:
-            await interaction.edit_original_response(embed=embed, view=BackToMenuView())
+            try:
+                await interaction.edit_original_response(embed=embed, view=BackToMenuView())
+            except (discord.NotFound, discord.HTTPException):
+                pass
 
 class AddRouteButton(Button):
     def __init__(self):
         super().__init__(label="Add Route", style=BotStyles.SUCCESS)
 
     async def callback(self, interaction: discord.Interaction):
+        if _shutting_down:
+            return
+            
         try:
             await interaction.response.send_modal(AddRouteModal(interaction.message))
         except discord.errors.NotFound:
-            await interaction.followup.send(
-                "Interaction expired. Please reopen the menu and try again.", ephemeral=True
-            )
-        except TypeError:
-            await interaction.response.send_modal(AddRouteModal())
+            try:
+                await interaction.followup.send(
+                    "Interaction expired. Please reopen the menu and try again.", ephemeral=True
+                )
+            except (discord.NotFound, discord.HTTPException):
+                pass
+        except (TypeError, RuntimeError):
+            if not _shutting_down:
+                try:
+                    await interaction.response.send_modal(AddRouteModal())
+                except (discord.NotFound, discord.HTTPException):
+                    pass
 
 # --------------------
 # Back to Menu Button
@@ -343,13 +550,19 @@ class BackToMenuButton(Button):
         super().__init__(label="Back to Menu", style=BotStyles.SECONDARY)
 
     async def callback(self, interaction: discord.Interaction):
-        await interaction.response.edit_message(
-            content="Traffic Manager Menu",
-            embed=None,
-            attachments=[],
-            view=MainMenu()
-        )
-        self.view.stop()
+        if _shutting_down:
+            return
+            
+        try:
+            await interaction.response.edit_message(
+                content="Traffic Manager Menu",
+                embed=None,
+                attachments=[],
+                view=MainMenu()
+            )
+            self.view.stop()
+        except (discord.NotFound, discord.HTTPException):
+            pass
 
 # --------------------
 # Back to Menu View
@@ -371,67 +584,80 @@ class RoutesPagination(View):
         self.cached_urls: dict[str, str] = {}
 
     async def update_embed(self, interaction: discord.Interaction = None):
-        route = self.routes[self.index]
-        start_lat, start_lng = route['start_lat'], route['start_lng']
-        end_lat, end_lng = route['end_lat'], route['end_lng']
-        distance_km = haversine_distance(start_lat, start_lng, end_lat, end_lng)
+        if _shutting_down:
+            return
+            
+        try:
+            route = self.routes[self.index]
+            start_lat, start_lng = route['start_lat'], route['start_lng']
+            end_lat, end_lng = route['end_lat'], route['end_lng']
+            distance_km = haversine_distance(start_lat, start_lng, end_lat, end_lng)
 
-        embed = discord.Embed(
-            title=f"Route: {route['name']}",
-            color=BotStyles.PRIMARY_COLOR,
-            timestamp=datetime.utcnow()
-        )
-        embed.add_field(name="Distance", value=f"{distance_km:.2f} km", inline=True)
-        embed.add_field(name="Start", value=f"{start_lat:.6f}, {start_lng:.6f}", inline=False)
-        embed.add_field(name="End", value=f"{end_lat:.6f}, {end_lng:.6f}", inline=False)
-        embed.set_footer(text=f"Page {self.index + 1} of {len(self.routes)}")
+            embed = discord.Embed(
+                title=f"Route: {route['name']}",
+                color=BotStyles.PRIMARY_COLOR,
+                timestamp=datetime.utcnow()
+            )
+            embed.add_field(name="Distance", value=f"{distance_km:.2f} km", inline=True)
+            embed.add_field(name="Start", value=f"{start_lat:.6f}, {start_lng:.6f}", inline=False)
+            embed.add_field(name="End", value=f"{end_lat:.6f}, {end_lng:.6f}", inline=False)
+            embed.set_footer(text=f"Page {self.index + 1} of {len(self.routes)}")
 
-        # Handle map image
-        file = None
-        if route.get("map_path") and os.path.isfile(route["map_path"]):
-            if route["name"] in self.cached_urls:
-                embed.set_image(url=self.cached_urls[route["name"]])
-            else:
-                filename = os.path.basename(route["map_path"])
-                file = discord.File(route["map_path"], filename=filename)
-                embed.set_image(url=f"attachment://{filename}")
+            file = None
+            if route.get("map_path") and os.path.isfile(route["map_path"]):
+                if route["name"] in self.cached_urls:
+                    embed.set_image(url=self.cached_urls[route["name"]])
+                else:
+                    filename = os.path.basename(route["map_path"])
+                    file = discord.File(route["map_path"], filename=filename)
+                    embed.set_image(url=f"attachment://{filename}")
 
-        # Update buttons state
-        self.prev_button.disabled = self.index == 0
-        self.next_button.disabled = self.index == len(self.routes) - 1
+            self.prev_button.disabled = self.index == 0
+            self.next_button.disabled = self.index == len(self.routes) - 1
 
-        if interaction:
-            await interaction.response.edit_message(embed=embed, attachments=[file] if file else [], view=self)
-            if not self.message:
-                self.message = await interaction.original_response()
-        elif self.message:
-            await self.message.edit(embed=embed, attachments=[file] if file else [], view=self)
+            if interaction:
+                await interaction.response.edit_message(embed=embed, attachments=[file] if file else [], view=self)
+                if not self.message:
+                    self.message = await interaction.original_response()
+            elif self.message:
+                await self.message.edit(embed=embed, attachments=[file] if file else [], view=self)
 
-        # Cache the attachment URL after first upload
-        if file and self.message:
-            uploaded_embed = self.message.embeds[0] if self.message.embeds else None
-            if uploaded_embed and uploaded_embed.image and uploaded_embed.image.url:
-                self.cached_urls[route["name"]] = uploaded_embed.image.url
+            if file and self.message:
+                uploaded_embed = self.message.embeds[0] if self.message.embeds else None
+                if uploaded_embed and uploaded_embed.image and uploaded_embed.image.url:
+                    self.cached_urls[route["name"]] = uploaded_embed.image.url
+                    
+        except (discord.NotFound, discord.HTTPException):
+            pass
 
     @discord.ui.button(label="Previous", style=BotStyles.SECONDARY)
     async def prev_button(self, interaction: discord.Interaction, button: Button):
+        if _shutting_down:
+            return
         self.index = max(0, self.index - 1)
         await self.update_embed(interaction)
 
     @discord.ui.button(label="Next", style=BotStyles.SECONDARY)
     async def next_button(self, interaction: discord.Interaction, button: Button):
+        if _shutting_down:
+            return
         self.index = min(len(self.routes) - 1, self.index + 1)
         await self.update_embed(interaction)
 
     @discord.ui.button(label="Main Menu", style=BotStyles.DANGER)
     async def close_button(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.edit_message(
-            content="Traffic Manager Menu",
-            embed=None,
-            attachments=[],
-            view=MainMenu()
-        )
-        self.stop()
+        if _shutting_down:
+            return
+        try:
+            await interaction.response.edit_message(
+                content="Traffic Manager Menu",
+                embed=None,
+                attachments=[],
+                view=MainMenu()
+            )
+            self.stop()
+        except (discord.NotFound, discord.HTTPException):
+            pass
 
 # --------------------
 # List Routes Button
@@ -441,11 +667,12 @@ class ListRoutesButton(Button):
         super().__init__(label="List Routes", style=BotStyles.PRIMARY)
 
     async def callback(self, interaction: discord.Interaction):
-        # Show loading state
-        await show_loading_state(interaction, "Loading Routes", "Fetching routes and generating maps...")
-
+        if _shutting_down:
+            return
+            
         try:
-            # Fetch routes asynchronously
+            await show_loading_state(interaction, "Loading Routes", "Fetching routes and generating maps...")
+            
             rows = await async_get_routes()
 
             if not rows:
@@ -457,17 +684,22 @@ class ListRoutesButton(Button):
                 await interaction.edit_original_response(embed=embed, view=BackToMenuView())
                 return
 
-            # Process routes data asynchronously
             routes_data = []
             for row in rows:
+                if _shutting_down:
+                    return
+                    
                 route_id, name, start_lat, start_lng, end_lat, end_lng, *_ = row
                 map_path = os.path.join(MAP_DIR, f"{name}.png")
                 
-                # Generate map if it doesn't exist (async)
                 if not os.path.isfile(map_path):
                     try:
                         map_path = await async_get_route_map(name, start_lat, start_lng, end_lat, end_lng)
-                    except:
+                    except RuntimeError:
+                        if _shutting_down:
+                            return
+                        map_path = None
+                    except Exception:
                         map_path = None
                 
                 routes_data.append({
@@ -484,13 +716,28 @@ class ListRoutesButton(Button):
             pagination.message = await interaction.original_response()
             await pagination.update_embed()
 
+        except RuntimeError as e:
+            if "shutdown" in str(e).lower():
+                return
+            embed = discord.Embed(
+                title="System Error",
+                description="System is shutting down",
+                color=BotStyles.ERROR_COLOR
+            )
+            try:
+                await interaction.edit_original_response(embed=embed, view=BackToMenuView())
+            except (discord.NotFound, discord.HTTPException):
+                pass
         except Exception as e:
             embed = discord.Embed(
                 title="Error Loading Routes",
                 description=f"Failed to load routes: {str(e)}",
                 color=BotStyles.ERROR_COLOR
             )
-            await interaction.edit_original_response(embed=embed, view=BackToMenuView())
+            try:
+                await interaction.edit_original_response(embed=embed, view=BackToMenuView())
+            except (discord.NotFound, discord.HTTPException):
+                pass
 
 # --------------------
 # Confirmation Popup
@@ -513,18 +760,17 @@ class YesButton(Button):
         self.parent_view = parent_view
 
     async def callback(self, interaction: discord.Interaction):
-        # Show loading state
-        await show_loading_state(interaction, "Deleting Route", "Removing route and cleaning up files...")
-
+        if _shutting_down:
+            return
+            
         try:
-            # Delete route from DB asynchronously
+            await show_loading_state(interaction, "Deleting Route", "Removing route and cleaning up files...")
+
             await async_delete_route(self.route_name)
 
-            # Delete map file if exists
             if self.route_data.get("map_path") and os.path.isfile(self.route_data["map_path"]):
                 await run_in_thread(os.remove, self.route_data["map_path"])
 
-            # Embed confirmation
             embed = discord.Embed(
                 title=f"Route Removed - {self.route_name}",
                 color=BotStyles.SUCCESS_COLOR,
@@ -536,14 +782,19 @@ class YesButton(Button):
             await interaction.edit_original_response(embed=embed, view=BackToMenuView(), attachments=[])
             self.parent_view.stop()
 
+        except RuntimeError as e:
+            if "shutdown" in str(e).lower():
+                return
         except Exception as e:
             embed = discord.Embed(
                 title="Deletion Failed",
                 description=f"Failed to delete route: {str(e)}",
                 color=BotStyles.ERROR_COLOR
             )
-            await interaction.edit_original_response(embed=embed, view=BackToMenuView())
-
+            try:
+                await interaction.edit_original_response(embed=embed, view=BackToMenuView())
+            except (discord.NotFound, discord.HTTPException):
+                pass
 class NoButton(Button):
     def __init__(self, parent_view: View, all_routes: list):
         super().__init__(label="No", style=BotStyles.SECONDARY)
@@ -551,13 +802,19 @@ class NoButton(Button):
         self.all_routes = all_routes
 
     async def callback(self, interaction: discord.Interaction):
-        view = RemoveRouteView(self.all_routes)
-        await interaction.response.edit_message(
-            content="Select a route to remove:",
-            embed=None,
-            view=view
-        )
-        self.parent_view.stop()
+        if _shutting_down:
+            return
+            
+        try:
+            view = RemoveRouteView(self.all_routes)
+            await interaction.response.edit_message(
+                content="Select a route to remove:",
+                embed=None,
+                view=view
+            )
+            self.parent_view.stop()
+        except (discord.NotFound, discord.HTTPException):
+            pass
 
 # --------------------
 # Remove Route Select + View
@@ -574,32 +831,37 @@ class RemoveRouteSelect(Select):
         self.routes = {r['name']: r for r in routes}
 
     async def callback(self, interaction: discord.Interaction):
-        selected_name = self.values[0]
-        route = self.routes[selected_name]
+        if _shutting_down:
+            return
+            
+        try:
+            selected_name = self.values[0]
+            route = self.routes[selected_name]
 
-        # Show loading state while preparing confirmation
-        await show_loading_state(interaction, "Preparing Deletion", "Loading route details...")
+            await show_loading_state(interaction, "Preparing Deletion", "Loading route details...")
 
-        # Attach map for preview
-        file = None
-        if route.get("map_path") and os.path.isfile(route["map_path"]):
-            filename = os.path.basename(route["map_path"])
-            file = discord.File(route["map_path"], filename=filename)
+            file = None
+            if route.get("map_path") and os.path.isfile(route["map_path"]):
+                filename = os.path.basename(route["map_path"])
+                file = discord.File(route["map_path"], filename=filename)
 
-        embed = discord.Embed(
-            title=f"Confirm Deletion - {selected_name}",
-            description="Are you sure you want to delete this route?",
-            color=BotStyles.WARNING_COLOR,
-            timestamp=datetime.utcnow()
-        )
-        embed.add_field(name="Start", value=f"{route['start_lat']:.6f}, {route['start_lng']:.6f}", inline=False)
-        embed.add_field(name="End", value=f"{route['end_lat']:.6f}, {route['end_lng']:.6f}", inline=False)
+            embed = discord.Embed(
+                title=f"Confirm Deletion - {selected_name}",
+                description="Are you sure you want to delete this route?",
+                color=BotStyles.WARNING_COLOR,
+                timestamp=datetime.utcnow()
+            )
+            embed.add_field(name="Start", value=f"{route['start_lat']:.6f}, {route['start_lng']:.6f}", inline=False)
+            embed.add_field(name="End", value=f"{route['end_lat']:.6f}, {route['end_lng']:.6f}", inline=False)
 
-        if file:
-            embed.set_image(url=f"attachment://{filename}")
+            if file:
+                embed.set_image(url=f"attachment://{filename}")
 
-        view = ConfirmDeleteView(selected_name, route, list(self.routes.values()))
-        await interaction.edit_original_response(embed=embed, view=view, attachments=[file] if file else [])
+            view = ConfirmDeleteView(selected_name, route, list(self.routes.values()))
+            await interaction.edit_original_response(embed=embed, view=view, attachments=[file] if file else [])
+            
+        except (discord.NotFound, discord.HTTPException):
+            pass
 
 class RemoveRouteView(View):
     def __init__(self, routes):
@@ -616,11 +878,12 @@ class RemoveRouteButton(Button):
         super().__init__(label="Remove Route", style=BotStyles.DANGER)
 
     async def callback(self, interaction: discord.Interaction):
-        # Show loading state
-        await show_loading_state(interaction, "Loading Routes", "Fetching routes for removal...")
-
+        if _shutting_down:
+            return
+            
         try:
-            # Use the wrapper instead of manual connection
+            await show_loading_state(interaction, "Loading Routes", "Fetching routes for removal...")
+            
             rows = await async_get_routes()
             
             if not rows:
@@ -634,7 +897,6 @@ class RemoveRouteButton(Button):
 
             routes_data = []
             for row in rows:
-                # Adjust for get_routes() returning more columns
                 route_id, name, start_lat, start_lng, end_lat, end_lng = row[0], row[1], row[2], row[3], row[4], row[5]
                 routes_data.append({
                     "name": name,
@@ -652,13 +914,19 @@ class RemoveRouteButton(Button):
                 view=view
             )
 
+        except RuntimeError as e:
+            if "shutdown" in str(e).lower():
+                return
         except Exception as e:
             embed = discord.Embed(
                 title="Error Loading Routes",
                 description=f"Failed to load routes: {str(e)}",
                 color=BotStyles.ERROR_COLOR
             )
-            await interaction.edit_original_response(embed=embed, view=BackToMenuView())
+            try:
+                await interaction.edit_original_response(embed=embed, view=BackToMenuView())
+            except (discord.NotFound, discord.HTTPException):
+                pass
 
 # ---------------------
 # Main Traffic Status Button
@@ -668,8 +936,14 @@ class TrafficStatusMainButton(Button):
         super().__init__(label="Check Traffic Status", style=BotStyles.PRIMARY)
 
     async def callback(self, interaction: discord.Interaction):
-        view = TrafficStatusView(interaction.message)
-        await interaction.response.edit_message(content="Choose an option:", embed=None, view=view)
+        if _shutting_down:
+            return
+            
+        try:
+            view = TrafficStatusView(interaction.message)
+            await interaction.response.edit_message(content="Choose an option:", embed=None, view=view)
+        except (discord.NotFound, discord.HTTPException):
+            pass
 
 # --------------------
 # Traffic Status Menu
@@ -691,10 +965,12 @@ class CheckSingleRouteButton(Button):
         self.original_message = original_message
 
     async def callback(self, interaction: discord.Interaction):
-        # Show loading state
-        await show_loading_state(interaction, "Loading Routes", "Fetching available routes...")
-
+        if _shutting_down:
+            return
+            
         try:
+            await show_loading_state(interaction, "Loading Routes", "Fetching available routes...")
+            
             routes = await async_get_routes()
             if not routes:
                 embed = discord.Embed(
@@ -711,13 +987,19 @@ class CheckSingleRouteButton(Button):
                 view=SelectRouteView(self.original_message, routes)
             )
 
+        except RuntimeError as e:
+            if "shutdown" in str(e).lower():
+                return
         except Exception as e:
             embed = discord.Embed(
                 title="Error Loading Routes",
                 description=f"Failed to load routes: {str(e)}",
                 color=BotStyles.ERROR_COLOR
             )
-            await interaction.edit_original_response(embed=embed, view=BackToMenuView())
+            try:
+                await interaction.edit_original_response(embed=embed, view=BackToMenuView())
+            except (discord.NotFound, discord.HTTPException):
+                pass
 
 class CheckAllRoutesButton(Button):
     def __init__(self, original_message: discord.Message):
@@ -725,10 +1007,12 @@ class CheckAllRoutesButton(Button):
         self.original_message = original_message
 
     async def callback(self, interaction: discord.Interaction):
-        # Show loading state immediately
-        await show_loading_state(interaction, "Checking All Routes", "This may take a moment...")
-
+        if _shutting_down:
+            return
+            
         try:
+            await show_loading_state(interaction, "Checking All Routes", "This may take a moment...")
+
             routes = await async_get_routes()
             if not routes:
                 embed = discord.Embed(
@@ -739,47 +1023,59 @@ class CheckAllRoutesButton(Button):
                 await interaction.edit_original_response(embed=embed, view=BackToMenuView())
                 return
 
-            # Check traffic for all routes concurrently
             tasks = []
             for r in routes:
+                if _shutting_down:
+                    return
+                    
                 route_id, name, start_lat, start_lng, end_lat, end_lng, last_normal_time, last_state, historical_json = r
                 baseline = calculate_baseline([] if not historical_json else json.loads(historical_json))
                 
-                # Create async task for each route
                 task = async_check_traffic(f"{start_lat},{start_lng}", f"{end_lat},{end_lng}", baseline)
                 tasks.append((r, task))
 
-            # Wait for all traffic checks to complete
             results = []
             for route, task in tasks:
+                if _shutting_down:
+                    return
                 try:
                     traffic_result = await task
                     results.append({
                         "route": route,
                         "traffic": traffic_result
                     })
+                except RuntimeError as e:
+                    if "shutdown" in str(e).lower():
+                        return
+                    results.append({
+                        "route": route,
+                        "traffic": {"error": str(e), "state": "Error"}
+                    })
                 except Exception as e:
                     logging.error(f"Failed to check traffic for route {route[1]}: {e}")
-                    # Add error result
                     results.append({
                         "route": route,
                         "traffic": {"error": str(e), "state": "Error"}
                     })
 
-            # Create paginated view
             view = TrafficPaginationView(results, original_message=interaction.message)
             embed, attachments = await view.get_page_embed()
 
-            # Edit original menu message with paginated results
             await interaction.edit_original_response(embed=embed, attachments=attachments, view=view)
 
+        except RuntimeError as e:
+            if "shutdown" in str(e).lower():
+                return
         except Exception as e:
             embed = discord.Embed(
                 title="Traffic Check Failed",
                 description=f"Failed to check traffic: {str(e)}",
                 color=BotStyles.ERROR_COLOR
             )
-            await interaction.edit_original_response(embed=embed, view=BackToMenuView())
+            try:
+                await interaction.edit_original_response(embed=embed, view=BackToMenuView())
+            except (discord.NotFound, discord.HTTPException):
+                pass
 
 # ---------------------
 # Route Selection Dropdown
@@ -799,23 +1095,22 @@ class SelectRoute(Select):
         self.original_message = original_message
 
     async def callback(self, interaction: discord.Interaction):
-        selected = self.values[0]
-        route = self.routes[selected]
-        route_id, name, start_lat, start_lng, end_lat, end_lng, _, _, historical_json = route
-        
-        # Show loading state
-        await show_loading_state(interaction, f"Checking Traffic - {name}", "Fetching current traffic conditions...")
-
+        if _shutting_down:
+            return
+            
         try:
-            # Check traffic asynchronously
+            selected = self.values[0]
+            route = self.routes[selected]
+            route_id, name, start_lat, start_lng, end_lat, end_lng, _, _, historical_json = route
+            
+            await show_loading_state(interaction, f"Checking Traffic - {name}", "Fetching current traffic conditions...")
+
             baseline = calculate_baseline([] if not historical_json else json.loads(historical_json))
             traffic = await async_check_traffic(f"{start_lat},{start_lng}", f"{end_lat},{end_lng}", baseline)
 
-            # Generate map asynchronously
             map_path = await async_get_route_map(name, start_lat, start_lng, end_lat, end_lng)
             file = File(map_path, filename=os.path.basename(map_path)) if os.path.isfile(map_path) else None
 
-            # Determine color based on traffic state
             if "error" in traffic:
                 color = BotStyles.ERROR_COLOR
                 state_text = "Error"
@@ -850,26 +1145,33 @@ class SelectRoute(Select):
                 view=BackToTrafficStatusView(self.original_message)
             )
 
+        except RuntimeError as e:
+            if "shutdown" in str(e).lower():
+                return
         except Exception as e:
             embed = discord.Embed(
                 title="Traffic Check Failed",
                 description=f"Failed to check traffic for {name}: {str(e)}",
                 color=BotStyles.ERROR_COLOR
             )
-            await interaction.edit_original_response(embed=embed, view=BackToTrafficStatusView(self.original_message))
+            try:
+                await interaction.edit_original_response(embed=embed, view=BackToTrafficStatusView(self.original_message))
+            except (discord.NotFound, discord.HTTPException):
+                pass
 
 # ---------------------
 # Pagination for multiple routes
 # ---------------------
+# Complete TrafficPaginationView class with all methods and shutdown handling
 class TrafficPaginationView(View):
     def __init__(self, results, original_message: discord.Message):
-        super().__init__(timeout=None)
+        super().__init__(timeout=300)  # 5 minute timeout
         self.results = results
         self.original_message = original_message
         self.current_page = 0
         self.total_pages = len(results)
 
-        # Create buttons
+        # Create buttons with proper references for update_buttons()
         self.prev_button = Button(label="Previous", style=BotStyles.SECONDARY)
         self.next_button = Button(label="Next", style=BotStyles.SECONDARY)
         self.back_button = BackToTrafficStatusButton(original_message)
@@ -887,68 +1189,203 @@ class TrafficPaginationView(View):
         self.update_buttons()
 
     def update_buttons(self):
+        """Update button disabled states based on current page"""
         self.prev_button.disabled = self.current_page == 0
         self.next_button.disabled = self.current_page >= self.total_pages - 1
 
     async def get_page_embed(self):
-        result = self.results[self.current_page]
-        route = result["route"]
-        r_id, name, start_lat, start_lng, end_lat, end_lng, _, _, historical_json = route
-        traffic = result["traffic"]
-
-        # Determine color based on traffic state
-        if "error" in traffic:
-            color = BotStyles.ERROR_COLOR
-            state_text = "Error"
-        else:
-            color = BotStyles.SUCCESS_COLOR if traffic['state'] == 'Normal' else BotStyles.ERROR_COLOR
-            state_text = "Normal" if traffic['state'] == 'Normal' else "Heavy"
-
-        embed = Embed(
-            title=f"Traffic Status - {name}",
-            color=color,
-            timestamp=datetime.utcnow()
-        )
-
-        if "error" in traffic:
-            embed.add_field(name="Error", value=traffic["error"], inline=False)
-        else:
-            embed.add_field(name="State", value=state_text, inline=True)
-            embed.add_field(name="Distance", value=f"{traffic['distance_km']:.2f} km", inline=True)
-            embed.add_field(name="Live Time", value=f"{traffic['total_live']} min", inline=True)
-            embed.add_field(name="Normal Time", value=f"{traffic['total_normal']} min", inline=True)
-            embed.add_field(name="Delay", value=f"{traffic['total_delay']} min", inline=True)
+        """Generate embed and attachments for current page"""
+        if _shutting_down:
+            return None, []
             
-            segments_summary = summarize_segments(traffic['heavy_segments']) or 'None'
-            embed.add_field(name="Heavy Segments", value=segments_summary, inline=False)
-        
-        embed.set_footer(text=f"Page {self.current_page+1} of {self.total_pages}")
-
-        # Generate map attachment if it exists
         try:
-            map_path = await async_get_route_map(name, start_lat, start_lng, end_lat, end_lng)
-            file = File(map_path, filename=os.path.basename(map_path)) if os.path.isfile(map_path) else None
-            if file:
-                embed.set_image(url=f"attachment://{os.path.basename(map_path)}")
-                return embed, [file]
+            result = self.results[self.current_page]
+            route = result["route"]
+            r_id, name, start_lat, start_lng, end_lat, end_lng, _, _, historical_json = route
+            traffic = result["traffic"]
+
+            # Determine color based on traffic state
+            if "error" in traffic:
+                color = BotStyles.ERROR_COLOR
+                state_text = "Error"
+            else:
+                color = BotStyles.SUCCESS_COLOR if traffic['state'] == 'Normal' else BotStyles.ERROR_COLOR
+                state_text = "Normal" if traffic['state'] == 'Normal' else "Heavy"
+
+            embed = Embed(
+                title=f"Traffic Status - {name}",
+                color=color,
+                timestamp=datetime.utcnow()
+            )
+
+            if "error" in traffic:
+                embed.add_field(name="Error", value=traffic["error"], inline=False)
+            else:
+                embed.add_field(name="State", value=state_text, inline=True)
+                embed.add_field(name="Distance", value=f"{traffic['distance_km']:.2f} km", inline=True)
+                embed.add_field(name="Live Time", value=f"{traffic['total_live']} min", inline=True)
+                embed.add_field(name="Normal Time", value=f"{traffic['total_normal']} min", inline=True)
+                embed.add_field(name="Delay", value=f"{traffic['total_delay']} min", inline=True)
+                
+                segments_summary = summarize_segments(traffic['heavy_segments']) or 'None'
+                embed.add_field(name="Heavy Segments", value=segments_summary, inline=False)
+            
+            embed.set_footer(text=f"Page {self.current_page+1} of {self.total_pages}")
+
+            # Generate map attachment if it exists
+            try:
+                if not _shutting_down:
+                    map_path = await async_get_route_map(name, start_lat, start_lng, end_lat, end_lng)
+                    if map_path and os.path.isfile(map_path):
+                        file = File(map_path, filename=os.path.basename(map_path))
+                        embed.set_image(url=f"attachment://{os.path.basename(map_path)}")
+                        return embed, [file]
+            except RuntimeError as e:
+                if "shutdown" in str(e).lower():
+                    return embed, []
+                logging.error(f"Runtime error generating map for {name}: {e}")
+            except Exception as e:
+                logging.error(f"Failed to generate map for {name}: {e}")
+            
+            return embed, []
+            
         except Exception as e:
-            logging.error(f"Failed to generate map for {name}: {e}")
-        
-        return embed, []
+            logging.error(f"Error in get_page_embed: {e}")
+            
+            # Return error embed instead of None
+            error_embed = Embed(
+                title="Error Loading Page",
+                description=f"Failed to load traffic data: {str(e)}",
+                color=BotStyles.ERROR_COLOR,
+                timestamp=datetime.utcnow()
+            )
+            error_embed.set_footer(text=f"Page {self.current_page+1} of {self.total_pages}")
+            return error_embed, []
 
     async def prev_callback(self, interaction: discord.Interaction):
-        if self.current_page > 0:
-            self.current_page -= 1
-            self.update_buttons()
-            embed, attachments = await self.get_page_embed()
-            await interaction.response.edit_message(embed=embed, attachments=attachments, content=None, view=self)
+        """Handle previous button click"""
+        if _shutting_down:
+            return
+            
+        try:
+            if self.current_page > 0:
+                self.current_page -= 1
+                self.update_buttons()
+                embed, attachments = await self.get_page_embed()
+                
+                if embed:
+                    await interaction.response.edit_message(
+                        embed=embed, 
+                        attachments=attachments, 
+                        content=None, 
+                        view=self
+                    )
+                else:
+                    # Fallback if embed generation failed
+                    await interaction.response.defer()
+                    
+        except discord.NotFound:
+            # Interaction expired
+            pass
+        except discord.HTTPException as e:
+            logging.error(f"Discord HTTP error in prev_callback: {e}")
+            try:
+                await interaction.response.defer()
+            except:
+                pass
+        except RuntimeError as e:
+            if "shutdown" in str(e).lower():
+                return
+            logging.error(f"Runtime error in prev_callback: {e}")
+        except Exception as e:
+            logging.error(f"Unexpected error in prev_callback: {e}")
+            try:
+                await interaction.response.defer()
+            except:
+                pass
 
     async def next_callback(self, interaction: discord.Interaction):
-        if self.current_page < self.total_pages - 1:
-            self.current_page += 1
-            self.update_buttons()
-            embed, attachments = await self.get_page_embed()
-            await interaction.response.edit_message(embed=embed, attachments=attachments, content=None, view=self)
+        """Handle next button click"""
+        if _shutting_down:
+            return
+            
+        try:
+            if self.current_page < self.total_pages - 1:
+                self.current_page += 1
+                self.update_buttons()
+                embed, attachments = await self.get_page_embed()
+                
+                if embed:
+                    await interaction.response.edit_message(
+                        embed=embed, 
+                        attachments=attachments, 
+                        content=None, 
+                        view=self
+                    )
+                else:
+                    # Fallback if embed generation failed
+                    await interaction.response.defer()
+                    
+        except discord.NotFound:
+            # Interaction expired
+            pass
+        except discord.HTTPException as e:
+            logging.error(f"Discord HTTP error in next_callback: {e}")
+            try:
+                await interaction.response.defer()
+            except:
+                pass
+        except RuntimeError as e:
+            if "shutdown" in str(e).lower():
+                return
+            logging.error(f"Runtime error in next_callback: {e}")
+        except Exception as e:
+            logging.error(f"Unexpected error in next_callback: {e}")
+            try:
+                await interaction.response.defer()
+            except:
+                pass
+
+    async def on_timeout(self):
+        """Handle view timeout - disable all buttons"""
+        if _shutting_down:
+            return
+            
+        try:
+            # Disable all buttons
+            for item in self.children:
+                if hasattr(item, 'disabled'):
+                    item.disabled = True
+            
+            # Try to update the message to show disabled state
+            # Note: We need a reference to the message to edit it
+            # This should be set by the calling code after sending the message
+            if hasattr(self, '_message') and self._message:
+                try:
+                    await self._message.edit(view=self)
+                except (discord.NotFound, discord.HTTPException):
+                    # Message might be deleted or we might not have permissions
+                    pass
+            
+        except Exception as e:
+            logging.error(f"Error in on_timeout: {e}")
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item):
+        """Handle view errors"""
+        if _shutting_down:
+            return
+            
+        logging.error(f"View error in TrafficPaginationView: {error}")
+        
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer()
+        except:
+            pass
+
+    def set_message(self, message: discord.Message):
+        """Set message reference for timeout handling"""
+        self._message = message
 
 # ---------------------
 # Back Buttons and Views
@@ -959,12 +1396,18 @@ class BackToTrafficStatusButton(Button):
         self.original_message = original_message
 
     async def callback(self, interaction: discord.Interaction):
-        await interaction.response.edit_message(
-            content="Traffic Status Menu",
-            embed=None,
-            attachments=[],
-            view=TrafficStatusView(self.original_message)
-        )
+        if _shutting_down:
+            return
+            
+        try:
+            await interaction.response.edit_message(
+                content="Traffic Status Menu",
+                embed=None,
+                attachments=[],
+                view=TrafficStatusView(self.original_message)
+            )
+        except (discord.NotFound, discord.HTTPException):
+            pass
 
 class BackToTrafficStatusView(View):
     def __init__(self, original_message: discord.Message):
@@ -979,10 +1422,12 @@ class ThresholdsButton(Button):
         super().__init__(label="Manage Thresholds", style=BotStyles.SECONDARY)
 
     async def callback(self, interaction: discord.Interaction):
-        # Show loading state
-        await show_loading_state(interaction, "Loading Thresholds", "Fetching current threshold configuration...")
-
+        if _shutting_down:
+            return
+            
         try:
+            await show_loading_state(interaction, "Loading Thresholds", "Fetching current threshold configuration...")
+
             thresholds = await async_get_thresholds()
             if not thresholds:
                 thresholds = []
@@ -1003,53 +1448,19 @@ class ThresholdsButton(Button):
                     view=view
                 )
 
+        except RuntimeError as e:
+            if "shutdown" in str(e).lower():
+                return
         except Exception as e:
             embed = discord.Embed(
                 title="Failed to Load Thresholds",
                 description=f"Error loading thresholds: {str(e)}",
                 color=BotStyles.ERROR_COLOR
             )
-            await interaction.edit_original_response(embed=embed, view=BackToMenuView())
-
-# --------------------
-# Thresholds Button
-# --------------------
-class ThresholdsButton(Button):
-    def __init__(self):
-        super().__init__(label="Manage Thresholds", style=BotStyles.SECONDARY)
-
-    async def callback(self, interaction: discord.Interaction):
-        # Show loading state
-        await show_loading_state(interaction, "Loading Thresholds", "Fetching current threshold configuration...")
-
-        try:
-            thresholds = await async_get_thresholds()
-            if not thresholds:
-                thresholds = []
-
-            view = ThresholdsView(thresholds)
-            if thresholds:
-                file = await run_in_thread(view.generate_thresholds_image, thresholds)
-                await interaction.edit_original_response(
-                    content="Traffic Thresholds Configuration",
-                    embed=view.embed,
-                    attachments=[file],
-                    view=view
-                )
-            else:
-                await interaction.edit_original_response(
-                    content="Traffic Thresholds Configuration",
-                    embed=view.embed,
-                    view=view
-                )
-
-        except Exception as e:
-            embed = discord.Embed(
-                title="Failed to Load Thresholds",
-                description=f"Error loading thresholds: {str(e)}",
-                color=BotStyles.ERROR_COLOR
-            )
-            await interaction.edit_original_response(embed=embed, view=BackToMenuView())
+            try:
+                await interaction.edit_original_response(embed=embed, view=BackToMenuView())
+            except (discord.NotFound, discord.HTTPException):
+                pass
 
 # --------------------
 # Thresholds View
@@ -1139,11 +1550,12 @@ class ThresholdsView(View):
             y += row_height
 
         # Save to BytesIO
-        buffer = BytesIO()
-        image.save(buffer, format="PNG")
-        buffer.seek(0)
-        self.buffer = buffer
-        return File(buffer, filename="thresholds_table.png")
+        with BytesIO() as buffer:
+            image.save(buffer, format="PNG")
+            image.close()
+            buffer.seek(0)
+            # Create File with buffer contents
+            return File(BytesIO(buffer.getvalue()), filename="thresholds_table.png")
 
 # --------------------
 # Sensitivity Help Button
@@ -1153,6 +1565,9 @@ class SensitivityHelpButton(Button):
         super().__init__(label="Info", style=BotStyles.SECONDARY)
 
     async def callback(self, interaction: discord.Interaction):
+        if _shutting_down:
+            return
+            
         embed = discord.Embed(
             title="Threshold Guide",
             description=(
@@ -1181,7 +1596,10 @@ class SensitivityHelpButton(Button):
             timestamp=datetime.utcnow()
         )
 
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        try:
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+        except (discord.NotFound, discord.HTTPException):
+            pass
 
 # --------------------
 # Threshold Modal + select
@@ -1192,10 +1610,16 @@ class SelectThreshold(Select):
         self.thresholds = thresholds
 
     async def callback(self, interaction: discord.Interaction):
-        selected_label = self.values[0]
-        threshold = next(t for t in self.thresholds if f"{t['min_km']}-{t['max_km']} km" == selected_label)
-        modal = EditThresholdModal(threshold, self.thresholds)
-        await interaction.response.send_modal(modal)
+        if _shutting_down:
+            return
+            
+        try:
+            selected_label = self.values[0]
+            threshold = next(t for t in self.thresholds if f"{t['min_km']}-{t['max_km']} km" == selected_label)
+            modal = EditThresholdModal(threshold, self.thresholds)
+            await interaction.response.send_modal(modal)
+        except (discord.NotFound, discord.HTTPException):
+            pass
 
 class EditThresholdModal(Modal):
     def __init__(self, threshold, all_thresholds):
@@ -1203,7 +1627,6 @@ class EditThresholdModal(Modal):
         self.threshold = threshold
         self.all_thresholds = all_thresholds
 
-        # Editable fields only
         self.factor_total = TextInput(label="Route Time Multiplier", default=str(threshold["factor_total"]))
         self.factor_step = TextInput(label="Segment Time Multiplier", default=str(threshold["factor_step"]))
         self.delay_total = TextInput(label="Route Delay Allowance", default=str(threshold["delay_total"]))
@@ -1215,11 +1638,12 @@ class EditThresholdModal(Modal):
         self.add_item(self.delay_step)
 
     async def on_submit(self, interaction: discord.Interaction):
-        # Show loading state
-        await show_loading_state(interaction, "Updating Threshold", "Saving changes...")
-
+        if _shutting_down:
+            return
+            
         try:
-            # Update values
+            await show_loading_state(interaction, "Updating Threshold", "Saving changes...")
+
             for key, field in [("factor_total", self.factor_total),
                                ("factor_step", self.factor_step),
                                ("delay_total", self.delay_total),
@@ -1235,10 +1659,8 @@ class EditThresholdModal(Modal):
                     await interaction.edit_original_response(embed=embed, view=BackToMenuView())
                     return
 
-            # Save thresholds asynchronously
             await async_set_thresholds(self.all_thresholds)
 
-            # Return to thresholds view in the same message
             view = ThresholdsView(self.all_thresholds)
             file = await run_in_thread(view.generate_thresholds_image, self.all_thresholds)
             
@@ -1249,23 +1671,32 @@ class EditThresholdModal(Modal):
                 view=view
             )
 
+        except RuntimeError as e:
+            if "shutdown" in str(e).lower():
+                return
         except Exception as e:
             embed = discord.Embed(
                 title="Update Failed",
                 description=f"Failed to update threshold: {str(e)}",
                 color=BotStyles.ERROR_COLOR
             )
-            await interaction.edit_original_response(embed=embed, view=BackToMenuView())
+            try:
+                await interaction.edit_original_response(embed=embed, view=BackToMenuView())
+            except (discord.NotFound, discord.HTTPException):
+                pass
 
+# ResetThresholdsButton
 class ResetThresholdsButton(Button):
     def __init__(self):
         super().__init__(label="Reset to Default", style=BotStyles.DANGER)
 
     async def callback(self, interaction: discord.Interaction):
-        # Show loading state
-        await show_loading_state(interaction, "Resetting Thresholds", "Restoring default values...")
-
+        if _shutting_down:
+            return
+            
         try:
+            await show_loading_state(interaction, "Resetting Thresholds", "Restoring default values...")
+
             await async_reset_thresholds()
             thresholds = await async_get_thresholds()
             view = ThresholdsView(thresholds)
@@ -1285,20 +1716,25 @@ class ResetThresholdsButton(Button):
                     view=view
                 )
 
+        except RuntimeError as e:
+            if "shutdown" in str(e).lower():
+                return
         except Exception as e:
             embed = discord.Embed(
                 title="Reset Failed",
                 description=f"Failed to reset thresholds: {str(e)}",
                 color=BotStyles.ERROR_COLOR
             )
-            await interaction.edit_original_response(embed=embed, view=BackToMenuView())
+            try:
+                await interaction.edit_original_response(embed=embed, view=BackToMenuView())
+            except (discord.NotFound, discord.HTTPException):
+                pass
 
 # --------------------
 # Main Menu
 # --------------------
 class MainMenu(View):
     def __init__(self):
-        super().__init__(timeout=None)
         self.add_item(AddRouteButton())
         self.add_item(ListRoutesButton())
         self.add_item(RemoveRouteButton())
@@ -1311,15 +1747,59 @@ class MainMenu(View):
 @bot.event
 async def on_ready():
     print(f"Bot is online as {bot.user}")
+    # Ensure we have a fresh thread pool on startup
+    create_thread_pool()
 
 @bot.command()
 async def menu(ctx):
     await ctx.send("Traffic Manager Menu", view=MainMenu())
 
-# Cleanup on shutdown
+# Handle errors gracefully without shutting down
+@bot.event
+async def on_error(event, *args, **kwargs):
+    logging.error(f"Bot error in {event}: {args}")
+    # Don't call cleanup here - just log the error
+
+@bot.event
+async def on_command_error(ctx, error):
+    logging.error(f"Command error: {error}")
+    # Don't call cleanup here either
+
+# Only cleanup on actual disconnect
 @bot.event
 async def on_disconnect():
-    thread_pool.shutdown(wait=True)
+    await graceful_cleanup()
 
+# =========================
+# Bot runner with restart
+# =========================
 async def run_discord_bot():
-    await bot.start(TOKEN)
+    """Enhanced bot runner with restart capability"""
+    global bot, _shutting_down
+
+    max_restarts = 5
+    restart_count = 0
+
+    while restart_count < max_restarts and not _shutting_down:
+        try:
+            if bot is None or bot.is_closed():
+                bot = create_bot_instance()
+
+            ensure_thread_pool()
+            await bot.start(TOKEN)
+
+        except Exception as e:
+            restart_count += 1
+            logging.error(f"💥 Bot crashed (attempt {restart_count}/{max_restarts}): {e}")
+
+            if restart_count < max_restarts and not _shutting_down:
+                logging.info("Restarting bot in 5 seconds...")
+                await asyncio.sleep(5)
+
+                shutdown_thread_pool(wait=False)
+                create_thread_pool()
+            else:
+                logging.error("❌ Max restart attempts reached or shutdown in progress")
+                break
+
+    await hard_shutdown()
