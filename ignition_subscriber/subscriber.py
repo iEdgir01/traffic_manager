@@ -12,6 +12,7 @@ class IgnitionMonitor:
         self.mqtt_topic = os.getenv("MQTT_TOPIC")
         self.ignition_state = False
         self.last_msg_time = None
+        self.ignition_on_time = None  # NEW: track when ignition turned on
         self.timeout = int(os.getenv("IGNITION_TIMEOUT", 60))
 
         self.client = mqtt.Client()
@@ -41,13 +42,18 @@ class IgnitionMonitor:
 
     def _handle_ignition_on(self):
         self.ignition_state = True
+        self.ignition_on_time = time.time()  # NEW
         print(f"IGNITION: ON at {time.strftime('%Y-%m-%d %H:%M:%S')}")
-        try:
-            print("INFO: Traffic processing started")
-            post_traffic_alerts()
-        except Exception as e:
-            print(f"ERROR: Traffic processing failed: {e}")
 
+        # Only trigger if within 5 mins of ignition event
+        if time.time() - self.ignition_on_time <= 300:
+            try:
+                print("INFO: Traffic processing started")
+                post_traffic_alerts()
+            except Exception as e:
+                print(f"ERROR: Traffic processing failed: {e}")
+        else:
+            print("INFO: Ignition ON too old, skipping traffic processing")
 
     def _monitor_ignition(self):
         while True:
@@ -56,6 +62,7 @@ class IgnitionMonitor:
                     self.ignition_state = False
                     print(f"IGNITION: OFF at {time.strftime('%Y-%m-%d %H:%M:%S')} (timeout)")
                     self.last_msg_time = None
+                    self.ignition_on_time = None
             time.sleep(2)
 
     def start(self):
