@@ -9,7 +9,7 @@ FROM python:3.12-slim
 WORKDIR /app
 
 # --------------------
-# Copy only necessary source files
+# Copy source files
 # --------------------
 COPY main.py /app/main.py
 COPY route_manager.py /app/route_manager.py
@@ -40,6 +40,6 @@ RUN echo '#!/bin/bash\npython3 /app/route_manager.py' > /usr/local/bin/menu \
 EXPOSE 80
 
 # --------------------
-# Default command when container starts
+# Default command (can be overridden in Compose)
 # --------------------
-CMD ["python", "main.py"]
+CMD ["python", "-u", "main.py"]
