@@ -3,7 +3,7 @@ services:
     image: iedgir01/traffic_manager:latest
     container_name: ignition_subscriber
     restart: unless-stopped
-    command: ["python", "-u", "ignition_subscriber/subscriber.py"]
+    command: ["python", "-u", "-m", "ignition_subscriber/subscriber.py"]
     environment:
       PYTHONUNBUFFERED: 1
       MQTT_BROKER: YOUR_MQTT_BROKER
@@ -17,7 +17,6 @@ services:
       DB_PATH: /app/data/traffic_routes.db
     volumes:
       - ./data:/app/data
-      - ./app:/app
     networks:
       - tailscale-traffic-manager-net
 
@@ -25,7 +24,7 @@ services:
     image: iedgir01/traffic_manager:latest
     container_name: discord_bot
     restart: unless-stopped
-    command: ["python", "-u", "discord_bot/traffic_helper.py"]
+    command: ["python", "-u", "-m", "discord_bot/traffic_helper.py"]
     environment:
       PYTHONUNBUFFERED: 1
       DISCORD_BOT_TOKEN: YOUR_DISCORD_BOT_TOKEN
@@ -35,7 +34,6 @@ services:
       DB_PATH: /app/data/traffic_routes.db
     volumes:
       - ./data:/app/data
-      - ./app:/app
     networks:
       - tailscale-traffic-manager-net
 
