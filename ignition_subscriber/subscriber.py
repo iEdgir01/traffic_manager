@@ -2,10 +2,19 @@ import os
 import json
 import time
 import threading
-import asyncio
 import paho.mqtt.client as mqtt
+from concurrent.futures import ThreadPoolExecutor
 from discord_bot.discord_notify import post_traffic_alerts
 
+# ----------------------------
+# Thread pool for traffic alerts
+# ----------------------------
+
+traffic_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="TrafficAlertsWorker")
+
+# ----------------------------
+# Ignition Monitor Class
+# ----------------------------
 class IgnitionMonitor:
     def __init__(self):
         self.mqtt_broker = os.getenv("MQTT_BROKER")
@@ -13,13 +22,16 @@ class IgnitionMonitor:
         self.mqtt_topic = os.getenv("MQTT_TOPIC")
         self.ignition_state = False
         self.last_msg_time = None
-        self.ignition_on_time = None  # NEW: track when ignition turned on
+        self.ignition_on_time = None
         self.timeout = int(os.getenv("IGNITION_TIMEOUT", 60))
 
         self.client = mqtt.Client()
         self.client.on_connect = self.on_connect
         self.client.on_message = self.on_message
 
+    # ----------------------------
+    # MQTT callbacks
+    # ----------------------------
     def on_connect(self, client, userdata, flags, rc):
         if rc == 0:
             print(f"MQTT: Connected to {self.mqtt_broker}:{self.mqtt_port}")
@@ -41,6 +53,9 @@ class IgnitionMonitor:
         except Exception as e:
             print(f"ERROR: Processing message failed: {e}")
 
+    # ----------------------------
+    # Ignition handling
+    # ----------------------------
     def _handle_ignition_on(self):
         self.ignition_state = True
         self.ignition_on_time = time.time()
@@ -56,16 +71,15 @@ class IgnitionMonitor:
                 except Exception as e:
                     print(f"ERROR: Traffic processing failed: {e}")
 
-            # Run in a separate daemon thread so it doesn't block the MQTT loop or Discord bot
-            threading.Thread(
-                target=run_alerts_safe,
-                daemon=True,
-                name="TrafficAlertsWorker"
-            ).start()
+            # Submit to thread pool instead of creating a new thread each time
+            traffic_executor.submit(run_alerts_safe)
+
         else:
             print("INFO: Ignition ON too old, skipping traffic processing")
 
-
+    # ----------------------------
+    # Monitor ignition OFF / timeout
+    # ----------------------------
     def _monitor_ignition(self):
         while True:
             if self.ignition_state and self.last_msg_time:
@@ -76,6 +90,9 @@ class IgnitionMonitor:
                     self.ignition_on_time = None
             time.sleep(2)
 
+    # ----------------------------
+    # Start MQTT client and monitor thread
+    # ----------------------------
     def start(self):
         if not all([self.mqtt_broker, self.mqtt_port, self.mqtt_topic]):
             raise ValueError("Missing MQTT configuration")
@@ -84,6 +101,9 @@ class IgnitionMonitor:
         self.client.loop_forever()
 
 
+# ----------------------------
+# Entry point
+# ----------------------------
 def main():
     monitor = IgnitionMonitor()
     monitor.start()
