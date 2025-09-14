@@ -434,7 +434,7 @@ def edit_threshold():
         print("      Decrease multipliers")
         print("      Increase delay allowances\n")
 
-        print(f"{Colors.YELLOW}[0]{Colors.RESET} Cancel editing and return to Thresholds Menu\n")
+        print(f"{Colors.YELLOW}[C]{Colors.RESET} Cancel editing and return to Thresholds Menu\n")
 
         # Input loop for all four values
         for key, desc in [("factor_total","Route Time Multiplier"), 
@@ -443,7 +443,7 @@ def edit_threshold():
                           ("delay_step","Segment Delay Allowance")]:
             while True:
                 val = input(f"{desc} [{t[key]}]: ").strip()
-                if val == "0":
+                if val == "C":
                     print(f"\n{Colors.RED}Editing canceled. Returning to Thresholds Menu...{Colors.RESET}")
                     input(f"{Colors.CYAN}Press Enter to continue...{Colors.RESET}")
                     return
