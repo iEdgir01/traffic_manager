@@ -11,10 +11,9 @@ import logging
 import json
 from traffic_utils import (
     init_db,
+    with_db,
     get_route_map,
     get_routes,
-    add_route,
-    delete_route,
     check_route_traffic,
     update_route_time,
     summarize_segments,
@@ -36,6 +35,7 @@ logging.basicConfig(level=logging.INFO)
 TOKEN = os.environ["DISCORD_BOT_TOKEN"]
 DATA_DIR = Path(os.environ["DATA_DIR"])
 MAP_DIR = Path(os.environ["MAPS_DIR"])
+DB_PATH = Path(os.environ["DB_PATH"])
 
 # Ensure directories exist
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -72,7 +72,7 @@ def shutdown_thread_pool(wait=False):
         try:
             thread_pool.shutdown(wait=wait, cancel_futures=True)
         except TypeError:
-            # Python < 3.9 doesn't support cancel_futures
+            # Python < 3.9 doesn’t support cancel_futures
             thread_pool.shutdown(wait=wait)
         finally:
             thread_pool = None
@@ -179,7 +179,7 @@ async def with_error_recovery(coro_func, *args, **kwargs):
 # Updated async wrappers with error recovery
 async def async_get_routes():
     """Async wrapper for get_routes with error recovery"""
-    return await with_error_recovery(lambda: run_in_thread(get_routes))
+    return await with_error_recovery(lambda: run_in_thread(get_routes()))
 
 async def async_add_route(name, start_lat, start_lng, end_lat, end_lng):
     """Async wrapper for adding route with error recovery"""
@@ -243,6 +243,24 @@ async def show_loading_state(interaction: discord.Interaction, title: str, descr
         # Interaction expired or bot is shutting down
         pass
 
+# ---------------------
+# DB functions
+# ---------------------
+@with_db
+def add_route(name, start_lat, start_lng, end_lat, end_lng, conn=None):
+    with conn.cursor() as c:
+        c.execute("""
+            INSERT INTO routes (name, start_lat, start_lng, end_lat, end_lng, last_normal_time, last_state, historical_times)
+            VALUES (%s, %s, %s, %s, NULL, 'Normal', '[]')
+        """, (name, start_lat, start_lng, end_lat, end_lng))
+    conn.commit()
+
+@with_db
+def delete_route(name, conn=None):
+    with conn.cursor() as c:
+        c.execute("DELETE FROM routes WHERE name=%s", (name,))
+    conn.commit()
+
 # --------------------
 # DMS parsing helpers (keeping existing)
 # --------------------
@@ -292,7 +310,7 @@ def register_route_and_generate_map(name, start_lat, start_lng, end_lat, end_lng
     init_db()
     try:
         add_route(name, start_lat, start_lng, end_lat, end_lng)
-    except Exception as e:
+    except ValueError as e:
         raise e
 
     # Generate map
@@ -451,24 +469,358 @@ class AddRouteModal(discord.ui.Modal):
             embed.add_field(name="End", value=f"{end_lat:.6f}, {end_lng:.6f}", inline=False)
 
             file = None
-            if route.get("map_path") and os.path.isfile(route["map_path"]):
-                filename = os.path.basename(route["map_path"])
-                file = discord.File(route["map_path"], filename=filename)
-
-            embed = discord.Embed(
-                title=f"Confirm Deletion - {selected_name}",
-                description="Are you sure you want to delete this route?",
-                color=BotStyles.WARNING_COLOR,
-                timestamp=datetime.utcnow()
-            )
-            embed.add_field(name="Start", value=f"{route['start_lat']:.6f}, {route['start_lng']:.6f}", inline=False)
-            embed.add_field(name="End", value=f"{route['end_lat']:.6f}, {route['end_lng']:.6f}", inline=False)
-
-            if file:
+            if os.path.isfile(map_path):
+                filename = os.path.basename(map_path)
+                file = discord.File(map_path, filename=filename)
                 embed.set_image(url=f"attachment://{filename}")
 
-            view = ConfirmDeleteView(selected_name, route, list(self.routes.values()))
-            await interaction.edit_original_response(embed=embed, view=view, attachments=[file] if file else [])
+            await interaction.edit_original_response(embed=embed, attachments=[file] if file else [], view=BackToMenuView())
+            
+        except RuntimeError as e:
+            if "shutdown" in str(e).lower():
+                return
+            embed = discord.Embed(
+                title="System Error",
+                description=f"System error: {e}",
+                color=BotStyles.ERROR_COLOR
+            )
+            try:
+                await interaction.edit_original_response(embed=embed, view=BackToMenuView())
+            except (discord.NotFound, discord.HTTPException):
+                pass
+        except Exception as e:
+            embed = discord.Embed(
+                title="Route Addition Failed" if "Coordinate" not in str(e) else "Coordinate Parsing Error",
+                description=f"Failed to add route: {e}",
+                color=BotStyles.ERROR_COLOR
+            )
+            try:
+                await interaction.edit_original_response(embed=embed, view=BackToMenuView())
+            except (discord.NotFound, discord.HTTPException):
+                pass
+
+class AddRouteButton(Button):
+    def __init__(self):
+        super().__init__(label="Add Route", style=BotStyles.SUCCESS)
+
+    async def callback(self, interaction: discord.Interaction):
+        if _shutting_down:
+            return
+            
+        try:
+            await interaction.response.send_modal(AddRouteModal(interaction.message))
+        except discord.errors.NotFound:
+            try:
+                await interaction.followup.send(
+                    "Interaction expired. Please reopen the menu and try again.", ephemeral=True
+                )
+            except (discord.NotFound, discord.HTTPException):
+                pass
+        except (TypeError, RuntimeError):
+            if not _shutting_down:
+                try:
+                    await interaction.response.send_modal(AddRouteModal())
+                except (discord.NotFound, discord.HTTPException):
+                    pass
+
+# --------------------
+# Back to Menu Button
+# --------------------
+class BackToMenuButton(Button):
+    def __init__(self):
+        super().__init__(label="Back to Menu", style=BotStyles.SECONDARY)
+
+    async def callback(self, interaction: discord.Interaction):
+        if _shutting_down:
+            return
+            
+        try:
+            await interaction.response.edit_message(
+                content="Traffic Manager Menu",
+                embed=None,
+                attachments=[],
+                view=get_main_menu_view()
+            )
+        except (discord.NotFound, discord.HTTPException):
+            pass
+
+# --------------------
+# Back to Menu View
+# --------------------
+class BackToMenuView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(BackToMenuButton())
+
+# --------------------
+# Paginated Routes View
+# --------------------
+class RoutesPagination(View):
+    def __init__(self, routes_data):
+        super().__init__(timeout=None)
+        self.routes = routes_data
+        self.index = 0
+        self.message: discord.Message | None = None
+        self.cached_urls: dict[str, str] = {}
+
+    async def update_embed(self, interaction: discord.Interaction = None):
+        if _shutting_down:
+            return
+            
+        try:
+            route = self.routes[self.index]
+            start_lat, start_lng = route['start_lat'], route['start_lng']
+            end_lat, end_lng = route['end_lat'], route['end_lng']
+            distance_km = haversine_distance(start_lat, start_lng, end_lat, end_lng)
+
+            embed = discord.Embed(
+                title=f"Route: {route['name']}",
+                color=BotStyles.PRIMARY_COLOR,
+                timestamp=datetime.utcnow()
+            )
+            embed.add_field(name="Distance", value=f"{distance_km:.2f} km", inline=True)
+            embed.add_field(name="Start", value=f"{start_lat:.6f}, {start_lng:.6f}", inline=False)
+            embed.add_field(name="End", value=f"{end_lat:.6f}, {end_lng:.6f}", inline=False)
+            embed.set_footer(text=f"Page {self.index + 1} of {len(self.routes)}")
+
+            file = None
+            if route.get("map_path") and os.path.isfile(route["map_path"]):
+                if route["name"] in self.cached_urls:
+                    embed.set_image(url=self.cached_urls[route["name"]])
+                else:
+                    filename = os.path.basename(route["map_path"])
+                    file = discord.File(route["map_path"], filename=filename)
+                    embed.set_image(url=f"attachment://{filename}")
+
+            self.prev_button.disabled = self.index == 0
+            self.next_button.disabled = self.index == len(self.routes) - 1
+
+            if interaction:
+                await interaction.response.edit_message(embed=embed, attachments=[file] if file else [], view=self)
+                if not self.message:
+                    self.message = await interaction.original_response()
+            elif self.message:
+                await self.message.edit(embed=embed, attachments=[file] if file else [], view=self)
+
+            if file and self.message:
+                uploaded_embed = self.message.embeds[0] if self.message.embeds else None
+                if uploaded_embed and uploaded_embed.image and uploaded_embed.image.url:
+                    self.cached_urls[route["name"]] = uploaded_embed.image.url
+                    
+        except (discord.NotFound, discord.HTTPException):
+            pass
+
+    @discord.ui.button(label="Previous", style=BotStyles.SECONDARY)
+    async def prev_button(self, interaction: discord.Interaction, button: Button):
+        if _shutting_down:
+            return
+        self.index = max(0, self.index - 1)
+        await self.update_embed(interaction)
+
+    @discord.ui.button(label="Next", style=BotStyles.SECONDARY)
+    async def next_button(self, interaction: discord.Interaction, button: Button):
+        if _shutting_down:
+            return
+        self.index = min(len(self.routes) - 1, self.index + 1)
+        await self.update_embed(interaction)
+
+    @discord.ui.button(label="Main Menu", style=BotStyles.DANGER)
+    async def close_button(self, interaction: discord.Interaction, button: Button):
+        if _shutting_down:
+            return
+        try:
+            await interaction.response.edit_message(
+                content="Traffic Manager Menu",
+                embed=None,
+                attachments=[],
+                view=get_main_menu_view()
+            )
+            self.stop()
+        except (discord.NotFound, discord.HTTPException):
+            pass
+
+# --------------------
+# List Routes Button
+# --------------------
+class ListRoutesButton(Button):
+    def __init__(self):
+        super().__init__(label="List Routes", style=BotStyles.PRIMARY)
+
+    async def callback(self, interaction: discord.Interaction):
+        if _shutting_down:
+            return
+            
+        try:
+            await show_loading_state(interaction, "Loading Routes", "Fetching routes and generating maps...")
+            
+            rows = await async_get_routes()
+
+            if not rows:
+                embed = discord.Embed(
+                    title="No Routes Found",
+                    description="No routes have been added yet.",
+                    color=BotStyles.WARNING_COLOR
+                )
+                await interaction.edit_original_response(embed=embed, view=BackToMenuView())
+                return
+
+            routes_data = []
+            for row in rows:
+                if _shutting_down:
+                    return
+                    
+                route_id, name, start_lat, start_lng, end_lat, end_lng, *_ = row
+                map_path = os.path.join(MAP_DIR, f"{name}.png")
+                
+                if not os.path.isfile(map_path):
+                    try:
+                        map_path = await async_get_route_map(name, start_lat, start_lng, end_lat, end_lng)
+                    except RuntimeError:
+                        if _shutting_down:
+                            return
+                        map_path = None
+                    except Exception:
+                        map_path = None
+                
+                routes_data.append({
+                    "name": name,
+                    "start_lat": start_lat,
+                    "start_lng": start_lng,
+                    "end_lat": end_lat,
+                    "end_lng": end_lng,
+                    "map_path": map_path
+                })
+
+            pagination = RoutesPagination(routes_data)
+            await interaction.edit_original_response(content="Listing routes...", embed=None, view=pagination)
+            pagination.message = await interaction.original_response()
+            await pagination.update_embed()
+
+        except RuntimeError as e:
+            if "shutdown" in str(e).lower():
+                return
+            embed = discord.Embed(
+                title="System Error",
+                description="System is shutting down",
+                color=BotStyles.ERROR_COLOR
+            )
+            try:
+                await interaction.edit_original_response(embed=embed, view=BackToMenuView())
+            except (discord.NotFound, discord.HTTPException):
+                pass
+        except Exception as e:
+            embed = discord.Embed(
+                title="Error Loading Routes",
+                description=f"Failed to load routes: {str(e)}",
+                color=BotStyles.ERROR_COLOR
+            )
+            try:
+                await interaction.edit_original_response(embed=embed, view=BackToMenuView())
+            except (discord.NotFound, discord.HTTPException):
+                pass
+
+# --------------------
+# Confirmation Popup
+# --------------------
+class ConfirmDeleteView(View):
+    def __init__(self, route_name: str, route_data: dict, all_routes: list):
+        super().__init__(timeout=None)
+        self.route_name = route_name
+        self.route_data = route_data
+        self.all_routes = all_routes
+
+        self.add_item(YesButton(route_name, route_data, self))
+        self.add_item(NoButton(self, all_routes))
+
+class YesButton(Button):
+    def __init__(self, route_name: str, route_data: dict, parent_view: View):
+        super().__init__(label="Yes", style=BotStyles.DANGER)
+        self.route_name = route_name
+        self.route_data = route_data
+        self.parent_view = parent_view
+
+    async def callback(self, interaction: discord.Interaction):
+        if _shutting_down:
+            return
+            
+        try:
+            await show_loading_state(interaction, "Deleting Route", "Removing route and cleaning up files...")
+
+            await async_delete_route(self.route_name)
+
+            if self.route_data.get("map_path") and os.path.isfile(self.route_data["map_path"]):
+                await run_in_thread(os.remove, self.route_data["map_path"])
+
+            embed = discord.Embed(
+                title=f"Route Removed - {self.route_name}",
+                color=BotStyles.SUCCESS_COLOR,
+                timestamp=datetime.utcnow()
+            )
+            embed.add_field(name="Start", value=f"{self.route_data['start_lat']:.6f}, {self.route_data['start_lng']:.6f}", inline=False)
+            embed.add_field(name="End", value=f"{self.route_data['end_lat']:.6f}, {self.route_data['end_lng']:.6f}", inline=False)
+
+            await interaction.edit_original_response(embed=embed, view=BackToMenuView(), attachments=[])
+            self.parent_view.stop()
+
+        except RuntimeError as e:
+            if "shutdown" in str(e).lower():
+                return
+        except Exception as e:
+            embed = discord.Embed(
+                title="Deletion Failed",
+                description=f"Failed to delete route: {str(e)}",
+                color=BotStyles.ERROR_COLOR
+            )
+            try:
+                await interaction.edit_original_response(embed=embed, view=BackToMenuView())
+            except (discord.NotFound, discord.HTTPException):
+                pass
+class NoButton(Button):
+    def __init__(self, parent_view: View, all_routes: list):
+        super().__init__(label="No", style=BotStyles.SECONDARY)
+        self.parent_view = parent_view
+        self.all_routes = all_routes
+
+    async def callback(self, interaction: discord.Interaction):
+        if _shutting_down:
+            return
+            
+        try:
+            view = RemoveRouteView(self.all_routes)
+            await interaction.response.edit_message(
+                content="Select a route to remove:",
+                embed=None,
+                view=view
+            )
+            self.parent_view.stop()
+        except (discord.NotFound, discord.HTTPException):
+            pass
+
+# --------------------
+# Remove Route Select + View
+# --------------------
+class RemoveRouteSelect(Select):
+    def __init__(self, routes):
+        options = [
+            SelectOption(
+                label=r['name'],
+                description=f"{r['start_lat']:.4f},{r['start_lng']:.4f} → {r['end_lat']:.4f},{r['end_lng']:.4f}"
+            ) for r in routes
+        ]
+        super().__init__(placeholder="Select a route to remove", min_values=1, max_values=1, options=options)
+        self.routes = {r['name']: r for r in routes}
+
+    async def callback(self, interaction: discord.Interaction):
+        if _shutting_down:
+            return
+            
+        try:
+            selected_name = self.values[0]
+            route = self.routes[selected_name]
+
+            await show_loading_state(interaction, "Preparing Deletion", "Loading route details...")
+
+            file = None
             if route.get("map_path") and os.path.isfile(route["map_path"]):
                 filename = os.path.basename(route["map_path"])
                 file = discord.File(route["map_path"], filename=filename)
@@ -525,13 +877,7 @@ class RemoveRouteButton(Button):
 
             routes_data = []
             for row in rows:
-                # Updated for PostgreSQL result format
-                route_id = row['id']
-                name = row['name']
-                start_lat = row['start_lat']
-                start_lng = row['start_lng']
-                end_lat = row['end_lat'] 
-                end_lng = row['end_lng']
+                route_id, name, start_lat, start_lng, end_lat, end_lng = row[0], row[1], row[2], row[3], row[4], row[5]
                 routes_data.append({
                     "name": name,
                     "start_lat": start_lat,
@@ -662,16 +1008,7 @@ class CheckAllRoutesButton(Button):
                 if _shutting_down:
                     return
                     
-                # Updated for PostgreSQL result format
-                route_id = r['id']
-                name = r['name']
-                start_lat = r['start_lat']
-                start_lng = r['start_lng'] 
-                end_lat = r['end_lat']
-                end_lng = r['end_lng']
-                last_normal_time = r.get('last_normal_time')
-                last_state = r.get('last_state')
-                historical_json = r.get('historical_times')
+                route_id, name, start_lat, start_lng, end_lat, end_lng, last_normal_time, last_state, historical_json = r
                 baseline = calculate_baseline([] if not historical_json else json.loads(historical_json))
                 
                 task = async_check_traffic(f"{start_lat},{start_lng}", f"{end_lat},{end_lng}", baseline)
@@ -687,9 +1024,9 @@ class CheckAllRoutesButton(Button):
                         "route": route,
                         "traffic": traffic_result
                     })
-                    route_id = route['id']
-                    if traffic_result and "error" not in traffic_result:
-                        await run_in_thread(update_route_time, route_id, traffic_result["total_normal"], traffic_result["state"])
+                    route_id = route[0]
+                    if "error" not in traffic_result:
+                        update_route_time(route_id, traffic_result["total_normal"], traffic_result["state"])
                 except RuntimeError as e:
                     if "shutdown" in str(e).lower():
                         return
@@ -698,7 +1035,7 @@ class CheckAllRoutesButton(Button):
                         "traffic": {"error": str(e), "state": "Error"}
                     })
                 except Exception as e:
-                    logging.error(f"Failed to check traffic for route {route['name']}: {e}")
+                    logging.error(f"Failed to check traffic for route {route[1]}: {e}")
                     results.append({
                         "route": route,
                         "traffic": {"error": str(e), "state": "Error"}
@@ -735,10 +1072,9 @@ class SelectRouteView(View):
 
 class SelectRoute(Select):
     def __init__(self, original_message: discord.Message, routes):
-        # Updated for PostgreSQL result format
-        options = [SelectOption(label=r['name']) for r in routes]
+        options = [SelectOption(label=r[1]) for r in routes]
         super().__init__(placeholder="Select a route...", min_values=1, max_values=1, options=options)
-        self.routes = {r['name']: r for r in routes}
+        self.routes = {r[1]: r for r in routes}
         self.original_message = original_message
 
     async def callback(self, interaction: discord.Interaction):
@@ -748,15 +1084,7 @@ class SelectRoute(Select):
         try:
             selected = self.values[0]
             route = self.routes[selected]
-            # Updated for PostgreSQL result format
-            route_id = route['id']
-            name = route['name']
-            start_lat = route['start_lat']
-            start_lng = route['start_lng']
-            end_lat = route['end_lat']
-            end_lng = route['end_lng']
-            historical_json = route.get('historical_times')
-            historical_json = route.get('historical_times')
+            route_id, name, start_lat, start_lng, end_lat, end_lng, _, _, historical_json = route
             
             await show_loading_state(interaction, f"Checking Traffic - {name}", "Fetching current traffic conditions...")
 
@@ -766,11 +1094,11 @@ class SelectRoute(Select):
             map_path = await async_get_route_map(name, start_lat, start_lng, end_lat, end_lng)
             file = File(map_path, filename=os.path.basename(map_path)) if os.path.isfile(map_path) else None
 
-            if not traffic or "error" in traffic:
+            if "error" in traffic:
                 color = BotStyles.ERROR_COLOR
                 state_text = "Error"
             else:
-                await run_in_thread(update_route_time, route_id, traffic["total_normal"], traffic["state"])
+                update_route_time(route_id, traffic["total_normal"], traffic["state"])
                 color = BotStyles.SUCCESS_COLOR if traffic['state'] == 'Normal' else BotStyles.ERROR_COLOR
                 state_text = "Normal" if traffic['state'] == 'Normal' else "Heavy"
 
@@ -780,8 +1108,8 @@ class SelectRoute(Select):
                 timestamp=datetime.utcnow()
             )
 
-            if not traffic or "error" in traffic:
-                embed.add_field(name="Error", value=traffic.get("error", "Unknown error occurred"), inline=False)
+            if "error" in traffic:
+                embed.add_field(name="Error", value=traffic["error"], inline=False)
             else:
                 embed.add_field(name="State", value=state_text, inline=True)
                 embed.add_field(name="Distance", value=f"{traffic['distance_km']:.2f} km", inline=True)
@@ -807,7 +1135,7 @@ class SelectRoute(Select):
         except Exception as e:
             embed = discord.Embed(
                 title="Traffic Check Failed",
-                description=f"Failed to check traffic for {selected}: {str(e)}",
+                description=f"Failed to check traffic for {name}: {str(e)}",
                 color=BotStyles.ERROR_COLOR
             )
             try:
@@ -856,18 +1184,11 @@ class TrafficPaginationView(View):
         try:
             result = self.results[self.current_page]
             route = result["route"]
-            # Updated for PostgreSQL result format
-            r_id = route['id']
-            name = route['name'] 
-            start_lat = route['start_lat']
-            start_lng = route['start_lng']
-            end_lat = route['end_lat']
-            end_lng = route['end_lng']
-            historical_json = route.get('historical_times')
+            r_id, name, start_lat, start_lng, end_lat, end_lng, _, _, historical_json = route
             traffic = result["traffic"]
 
             # Determine color based on traffic state
-            if not traffic or "error" in traffic:
+            if "error" in traffic:
                 color = BotStyles.ERROR_COLOR
                 state_text = "Error"
             else:
@@ -880,8 +1201,8 @@ class TrafficPaginationView(View):
                 timestamp=datetime.utcnow()
             )
 
-            if not traffic or "error" in traffic:
-                embed.add_field(name="Error", value=traffic.get("error", "Unknown error occurred"), inline=False)
+            if "error" in traffic:
+                embed.add_field(name="Error", value=traffic["error"], inline=False)
             else:
                 embed.add_field(name="State", value=state_text, inline=True)
                 embed.add_field(name="Distance", value=f"{traffic['distance_km']:.2f} km", inline=True)
@@ -943,9 +1264,11 @@ class TrafficPaginationView(View):
                         view=self
                     )
                 else:
+                    # Fallback if embed generation failed
                     await interaction.response.defer()
                     
         except discord.NotFound:
+            # Interaction expired
             pass
         except discord.HTTPException as e:
             logging.error(f"Discord HTTP error in prev_callback: {e}")
@@ -983,9 +1306,11 @@ class TrafficPaginationView(View):
                         view=self
                     )
                 else:
+                    # Fallback if embed generation failed
                     await interaction.response.defer()
                     
         except discord.NotFound:
+            # Interaction expired
             pass
         except discord.HTTPException as e:
             logging.error(f"Discord HTTP error in next_callback: {e}")
@@ -1015,10 +1340,14 @@ class TrafficPaginationView(View):
                 if hasattr(item, 'disabled'):
                     item.disabled = True
             
+            # Try to update the message to show disabled state
+            # Note: We need a reference to the message to edit it
+            # This should be set by the calling code after sending the message
             if hasattr(self, '_message') and self._message:
                 try:
                     await self._message.edit(view=self)
                 except (discord.NotFound, discord.HTTPException):
+                    # Message might be deleted or we might not have permissions
                     pass
             
         except Exception as e:
@@ -1506,388 +1835,3 @@ async def run_discord_bot():
 
     # Final cleanup
     await soft_cleanup()
-
-# =========================
-# Main entry point
-# =========================
-if __name__ == "__main__":
-    import signal
-    import sys
-    
-    # Handle signals for clean shutdown
-    def signal_handler(signum, frame):
-        logging.info(f"Received signal {signum}, initiating shutdown...")
-        force_permanent_shutdown()
-        sys.exit(0)
-    
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-    
-    # Run the bot
-    try:
-        asyncio.run(run_discord_bot())
-    except KeyboardInterrupt:
-        logging.info("Bot stopped by user")
-    except Exception as e:
-        logging.error(f"Fatal error: {e}")
-        sys.exit(1)
-            if os.path.isfile(map_path):
-                filename = os.path.basename(map_path)
-                file = discord.File(map_path, filename=filename)
-                embed.set_image(url=f"attachment://{filename}")
-
-            await interaction.edit_original_response(embed=embed, attachments=[file] if file else [], view=BackToMenuView())
-            
-        except RuntimeError as e:
-            if "shutdown" in str(e).lower():
-                return
-            embed = discord.Embed(
-                title="System Error",
-                description=f"System error: {e}",
-                color=BotStyles.ERROR_COLOR
-            )
-            try:
-                await interaction.edit_original_response(embed=embed, view=BackToMenuView())
-            except (discord.NotFound, discord.HTTPException):
-                pass
-        except Exception as e:
-            embed = discord.Embed(
-                title="Route Addition Failed" if "Coordinate" not in str(e) else "Coordinate Parsing Error",
-                description=f"Failed to add route: {e}",
-                color=BotStyles.ERROR_COLOR
-            )
-            try:
-                await interaction.edit_original_response(embed=embed, view=BackToMenuView())
-            except (discord.NotFound, discord.HTTPException):
-                pass
-
-class AddRouteButton(Button):
-    def __init__(self):
-        super().__init__(label="Add Route", style=BotStyles.SUCCESS)
-
-    async def callback(self, interaction: discord.Interaction):
-        if _shutting_down:
-            return
-            
-        try:
-            await interaction.response.send_modal(AddRouteModal(interaction.message))
-        except discord.errors.NotFound:
-            try:
-                await interaction.followup.send(
-                    "Interaction expired. Please reopen the menu and try again.", ephemeral=True
-                )
-            except (discord.NotFound, discord.HTTPException):
-                pass
-        except (TypeError, RuntimeError):
-            if not _shutting_down:
-                try:
-                    await interaction.response.send_modal(AddRouteModal())
-                except (discord.NotFound, discord.HTTPException):
-                    pass
-
-# --------------------
-# Back to Menu Button
-# --------------------
-class BackToMenuButton(Button):
-    def __init__(self):
-        super().__init__(label="Back to Menu", style=BotStyles.SECONDARY)
-
-    async def callback(self, interaction: discord.Interaction):
-        if _shutting_down:
-            return
-            
-        try:
-            await interaction.response.edit_message(
-                content="Traffic Manager Menu",
-                embed=None,
-                attachments=[],
-                view=get_main_menu_view()
-            )
-        except (discord.NotFound, discord.HTTPException):
-            pass
-
-# --------------------
-# Back to Menu View
-# --------------------
-class BackToMenuView(View):
-    def __init__(self):
-        super().__init__(timeout=None)
-        self.add_item(BackToMenuButton())
-
-# --------------------
-# Paginated Routes View
-# --------------------
-class RoutesPagination(View):
-    def __init__(self, routes_data):
-        super().__init__(timeout=None)
-        self.routes = routes_data
-        self.index = 0
-        self.message: discord.Message | None = None
-        self.cached_urls: dict[str, str] = {}
-
-    async def update_embed(self, interaction: discord.Interaction = None):
-        if _shutting_down:
-            return
-            
-        try:
-            route = self.routes[self.index]
-            start_lat, start_lng = route['start_lat'], route['start_lng']
-            end_lat, end_lng = route['end_lat'], route['end_lng']
-            distance_km = haversine_distance(start_lat, start_lng, end_lat, end_lng)
-
-            embed = discord.Embed(
-                title=f"Route: {route['name']}",
-                color=BotStyles.PRIMARY_COLOR,
-                timestamp=datetime.utcnow()
-            )
-            embed.add_field(name="Distance", value=f"{distance_km:.2f} km", inline=True)
-            embed.add_field(name="Start", value=f"{start_lat:.6f}, {start_lng:.6f}", inline=False)
-            embed.add_field(name="End", value=f"{end_lat:.6f}, {end_lng:.6f}", inline=False)
-            embed.set_footer(text=f"Page {self.index + 1} of {len(self.routes)}")
-
-            file = None
-            if route.get("map_path") and os.path.isfile(route["map_path"]):
-                if route["name"] in self.cached_urls:
-                    embed.set_image(url=self.cached_urls[route["name"]])
-                else:
-                    filename = os.path.basename(route["map_path"])
-                    file = discord.File(route["map_path"], filename=filename)
-                    embed.set_image(url=f"attachment://{filename}")
-
-            self.prev_button.disabled = self.index == 0
-            self.next_button.disabled = self.index == len(self.routes) - 1
-
-            if interaction:
-                await interaction.response.edit_message(embed=embed, attachments=[file] if file else [], view=self)
-                if not self.message:
-                    self.message = await interaction.original_response()
-            elif self.message:
-                await self.message.edit(embed=embed, attachments=[file] if file else [], view=self)
-
-            if file and self.message:
-                uploaded_embed = self.message.embeds[0] if self.message.embeds else None
-                if uploaded_embed and uploaded_embed.image and uploaded_embed.image.url:
-                    self.cached_urls[route["name"]] = uploaded_embed.image.url
-                    
-        except (discord.NotFound, discord.HTTPException):
-            pass
-
-    @discord.ui.button(label="Previous", style=BotStyles.SECONDARY)
-    async def prev_button(self, interaction: discord.Interaction, button: Button):
-        if _shutting_down:
-            return
-        self.index = max(0, self.index - 1)
-        await self.update_embed(interaction)
-
-    @discord.ui.button(label="Next", style=BotStyles.SECONDARY)
-    async def next_button(self, interaction: discord.Interaction, button: Button):
-        if _shutting_down:
-            return
-        self.index = min(len(self.routes) - 1, self.index + 1)
-        await self.update_embed(interaction)
-
-    @discord.ui.button(label="Main Menu", style=BotStyles.DANGER)
-    async def close_button(self, interaction: discord.Interaction, button: Button):
-        if _shutting_down:
-            return
-        try:
-            await interaction.response.edit_message(
-                content="Traffic Manager Menu",
-                embed=None,
-                attachments=[],
-                view=get_main_menu_view()
-            )
-            self.stop()
-        except (discord.NotFound, discord.HTTPException):
-            pass
-
-# --------------------
-# List Routes Button
-# --------------------
-class ListRoutesButton(Button):
-    def __init__(self):
-        super().__init__(label="List Routes", style=BotStyles.PRIMARY)
-
-    async def callback(self, interaction: discord.Interaction):
-        if _shutting_down:
-            return
-            
-        try:
-            await show_loading_state(interaction, "Loading Routes", "Fetching routes and generating maps...")
-            
-            rows = await async_get_routes()
-
-            if not rows:
-                embed = discord.Embed(
-                    title="No Routes Found",
-                    description="No routes have been added yet.",
-                    color=BotStyles.WARNING_COLOR
-                )
-                await interaction.edit_original_response(embed=embed, view=BackToMenuView())
-                return
-
-            routes_data = []
-            for row in rows:
-                if _shutting_down:
-                    return
-                    
-                # Updated for PostgreSQL result format
-                route_id = row['id']
-                name = row['name']
-                start_lat = row['start_lat']
-                start_lng = row['start_lng'] 
-                end_lat = row['end_lat']
-                end_lng = row['end_lng']
-                map_path = os.path.join(MAP_DIR, f"{name}.png")
-                
-                if not os.path.isfile(map_path):
-                    try:
-                        map_path = await async_get_route_map(name, start_lat, start_lng, end_lat, end_lng)
-                    except RuntimeError:
-                        if _shutting_down:
-                            return
-                        map_path = None
-                    except Exception:
-                        map_path = None
-                
-                routes_data.append({
-                    "name": name,
-                    "start_lat": start_lat,
-                    "start_lng": start_lng,
-                    "end_lat": end_lat,
-                    "end_lng": end_lng,
-                    "map_path": map_path
-                })
-
-            pagination = RoutesPagination(routes_data)
-            await interaction.edit_original_response(content="Listing routes...", embed=None, view=pagination)
-            pagination.message = await interaction.original_response()
-            await pagination.update_embed()
-
-        except RuntimeError as e:
-            if "shutdown" in str(e).lower():
-            if "shutdown" in str(e).lower():
-                return
-            embed = discord.Embed(
-                title="System Error",
-                description="System is shutting down",
-                color=BotStyles.ERROR_COLOR
-            )
-            try:
-                await interaction.edit_original_response(embed=embed, view=BackToMenuView())
-            except (discord.NotFound, discord.HTTPException):
-                pass
-        except Exception as e:
-            embed = discord.Embed(
-                title="Error Loading Routes",
-                description=f"Failed to load routes: {str(e)}",
-                color=BotStyles.ERROR_COLOR
-            )
-            try:
-                await interaction.edit_original_response(embed=embed, view=BackToMenuView())
-            except (discord.NotFound, discord.HTTPException):
-                pass
-
-# --------------------
-# Confirmation Popup
-# --------------------
-class ConfirmDeleteView(View):
-    def __init__(self, route_name: str, route_data: dict, all_routes: list):
-        super().__init__(timeout=None)
-        self.route_name = route_name
-        self.route_data = route_data
-        self.all_routes = all_routes
-
-        self.add_item(YesButton(route_name, route_data, self))
-        self.add_item(NoButton(self, all_routes))
-
-class YesButton(Button):
-    def __init__(self, route_name: str, route_data: dict, parent_view: View):
-        super().__init__(label="Yes", style=BotStyles.DANGER)
-        self.route_name = route_name
-        self.route_data = route_data
-        self.parent_view = parent_view
-
-    async def callback(self, interaction: discord.Interaction):
-        if _shutting_down:
-            return
-            
-        try:
-            await show_loading_state(interaction, "Deleting Route", "Removing route and cleaning up files...")
-
-            await async_delete_route(self.route_name)
-
-            if self.route_data.get("map_path") and os.path.isfile(self.route_data["map_path"]):
-                await run_in_thread(os.remove, self.route_data["map_path"])
-
-            embed = discord.Embed(
-                title=f"Route Removed - {self.route_name}",
-                color=BotStyles.SUCCESS_COLOR,
-                timestamp=datetime.utcnow()
-            )
-            embed.add_field(name="Start", value=f"{self.route_data['start_lat']:.6f}, {self.route_data['start_lng']:.6f}", inline=False)
-            embed.add_field(name="End", value=f"{self.route_data['end_lat']:.6f}, {self.route_data['end_lng']:.6f}", inline=False)
-
-            await interaction.edit_original_response(embed=embed, view=BackToMenuView(), attachments=[])
-            self.parent_view.stop()
-
-        except RuntimeError as e:
-            if "shutdown" in str(e).lower():
-                return
-        except Exception as e:
-            embed = discord.Embed(
-                title="Deletion Failed",
-                description=f"Failed to delete route: {str(e)}",
-                color=BotStyles.ERROR_COLOR
-            )
-            try:
-                await interaction.edit_original_response(embed=embed, view=BackToMenuView())
-            except (discord.NotFound, discord.HTTPException):
-                pass
-
-class NoButton(Button):
-    def __init__(self, parent_view: View, all_routes: list):
-        super().__init__(label="No", style=BotStyles.SECONDARY)
-        self.parent_view = parent_view
-        self.all_routes = all_routes
-
-    async def callback(self, interaction: discord.Interaction):
-        if _shutting_down:
-            return
-            
-        try:
-            view = RemoveRouteView(self.all_routes)
-            await interaction.response.edit_message(
-                content="Select a route to remove:",
-                embed=None,
-                view=view
-            )
-            self.parent_view.stop()
-        except (discord.NotFound, discord.HTTPException):
-            pass
-
-# --------------------
-# Remove Route Select + View
-# --------------------
-class RemoveRouteSelect(Select):
-    def __init__(self, routes):
-        options = [
-            SelectOption(
-                label=r['name'],
-                description=f"{r['start_lat']:.4f},{r['start_lng']:.4f} → {r['end_lat']:.4f},{r['end_lng']:.4f}"
-            ) for r in routes
-        ]
-        super().__init__(placeholder="Select a route to remove", min_values=1, max_values=1, options=options)
-        self.routes = {r['name']: r for r in routes}
-
-    async def callback(self, interaction: discord.Interaction):
-        if _shutting_down:
-            return
-            
-        try:
-            selected_name = self.values[0]
-            route = self.routes[selected_name]
-
-            await show_loading_state(interaction, "Preparing Deletion", "Loading route details...")
-
-            file = None
