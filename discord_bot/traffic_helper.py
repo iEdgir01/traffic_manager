@@ -35,7 +35,6 @@ logging.basicConfig(level=logging.INFO)
 TOKEN = os.environ["DISCORD_BOT_TOKEN"]
 DATA_DIR = Path(os.environ["DATA_DIR"])
 MAP_DIR = Path(os.environ["MAPS_DIR"])
-DB_PATH = Path(os.environ["DB_PATH"])
 
 # Ensure directories exist
 DATA_DIR.mkdir(parents=True, exist_ok=True)
