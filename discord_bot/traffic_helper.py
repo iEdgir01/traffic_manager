@@ -1840,28 +1840,27 @@ def attach_bot_events(bot):
         logging.info(f"Bot is online as {bot.user}")
         health_monitor.record_heartbeat()  # Record successful connection
         
-        # Initialize database and ensure we have a fresh thread pool on startup
+        # Initialize database and ensure thread pool exists
         try:
             await run_in_thread(init_db)
             logging.info("Database initialized successfully")
         except Exception as e:
             logging.error(f"Failed to initialize database: {e}")
-        create_thread_pool()
+        ensure_thread_pool()
 
     @bot.event
     async def on_connect():
         logging.info("Bot connected to Discord")
         health_monitor.record_heartbeat()
 
-    @bot.event  
+    @bot.event
     async def on_resumed():
         logging.info("Bot session resumed")
         health_monitor.record_heartbeat()
 
-    # Add periodic heartbeat
     @bot.event
     async def on_message(message):
-        # Update heartbeat on message activity (light health check)
+        # Update heartbeat on message activity
         health_monitor.record_heartbeat()
         await bot.process_commands(message)
 
@@ -1880,105 +1879,82 @@ def attach_bot_events(bot):
 
     @bot.event
     async def on_disconnect():
-        logging.warning("Bot disconnected")
-        await soft_cleanup()
+        logging.warning("Bot disconnected. Will attempt reconnect automatically.")
+        health_monitor.record_failure()
 
 # =========================
 # Bot runner with restart
 # =========================
 async def run_discord_bot():
-    """Enhanced bot runner with health checks and exponential backoff"""
+    """Discord bot runner that stays online indefinitely.
+    Restarts only on real crashes. Only stops on container shutdown."""
     global bot, _shutting_down, _force_permanent_shutdown, health_monitor
 
-    logging.info("Discord bot runner starting...")  # ADD THIS
+    logging.info("Discord bot runner starting...")
     
-    max_restarts = 8
-    restart_count = 0
-    base_delay = 5
-
     if not _force_permanent_shutdown:
         _shutting_down = False
 
-    while restart_count < max_restarts and not _shutting_down and not _force_permanent_shutdown:
+    while not _force_permanent_shutdown:
         try:
-            if not health_monitor.should_attempt_reconnection():
-                await asyncio.sleep(1)
-                continue
+            bot = create_bot_instance()
+            attach_bot_events(bot)
+            ensure_thread_pool()
 
-            async with bot_session() as session:
-                bot = create_bot_instance()
-                session.set_bot(bot)
-                attach_bot_events(bot)
-                
-                logging.info(f"Starting Discord bot (attempt {restart_count + 1}/{max_restarts})")
-                health_monitor.record_failure()
-                
-                await asyncio.wait_for(bot.start(TOKEN), timeout=120.0)
-                logging.info("Bot disconnected normally")
-                break
-
-        except asyncio.TimeoutError:
-            restart_count += 1
-            logging.error(f"Bot connection timed out (attempt {restart_count})")
-            
-            delay = min(300, base_delay * (2 ** restart_count))
-            jitter = delay * 0.1 * (0.5 - asyncio.get_event_loop().time() % 1)
-            wait_time = delay + jitter
-            
-            logging.info(f"Exponential backoff: waiting {wait_time:.1f}s before retry...")
-            if not _shutting_down:
-                await asyncio.sleep(wait_time)
+            logging.info("Starting Discord Bot...")
+            await bot.start(TOKEN)  # NO timeout
 
         except asyncio.CancelledError:
             logging.warning("Bot start was cancelled")
             break
-                
-        except Exception as e:
-            restart_count += 1
-            error_msg = str(e)
-            
-            delay = min(300, base_delay * (2 ** restart_count))
-            
-            if any(keyword in error_msg.lower() for keyword in ['resolve', 'connection', 'timeout', 'network']):
-                logging.error(f"Network error (attempt {restart_count}): {e}")
-                delay *= 2
-            else:
-                logging.error(f"Bot crashed (attempt {restart_count}): {e}")
-            
-            delay = min(600, delay)
-            logging.info(f"Exponential backoff: waiting {delay}s before retry...")
-            
-            if restart_count < max_restarts and not _shutting_down:
-                await asyncio.sleep(delay)
 
+        except Exception as e:
+            logging.error(f"Bot crashed unexpectedly: {type(e).__name__}: {e}")
+            if _force_permanent_shutdown:
+                logging.info("Permanent shutdown requested, stopping restarts")
+                break
+            # Brief pause before restarting
+            await asyncio.sleep(5)
+
+        finally:
+            # Soft cleanup: close bot if needed, but keep thread pool for restart
+            try:
+                if bot and not bot.is_closed():
+                    await bot.close()
+            except Exception as e:
+                logging.error(f"Error during bot close: {e}")
+            bot = None
+
+    # If container is stopping, do final cleanup
     await soft_cleanup()
+    logging.info("Discord Bot stopped permanently")
 
 if __name__ == "__main__":
     import signal
     import atexit
-    
+
     def signal_handler(signum, frame):
-        logger.info(f"Received signal {signum}")
+        logger.info(f"Received signal {signum}, shutting down permanently")
         force_permanent_shutdown()
         sys.exit(0)
-    
+
     def cleanup_on_exit():
         if not _force_permanent_shutdown:
-            logger.info("Exit cleanup triggered")
+            logger.info("Container exiting, performing permanent shutdown")
             force_permanent_shutdown()
-    
-    # Register cleanup handlers
-    atexit.register(cleanup_on_exit)
+
+    # Register signal handlers and atexit
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
-    
+    atexit.register(cleanup_on_exit)
+
     try:
         logger.info("Starting Discord Bot...")
         asyncio.run(run_discord_bot())
     except KeyboardInterrupt:
-        logger.info("Discord Bot manually stopped")
+        logger.info("Bot manually stopped")
     except Exception as e:
-        logger.error(f"Discord Bot crashed: {e}")
+        logger.error(f"Discord Bot crashed: {type(e).__name__}: {e}")
         raise
     finally:
         logger.info("Discord Bot shutdown complete")
