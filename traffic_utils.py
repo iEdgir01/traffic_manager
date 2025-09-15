@@ -87,7 +87,14 @@ def init_db(conn=None):
 def get_routes(conn=None):
     with conn.cursor() as c:
         c.execute('SELECT * FROM routes')
-        return c.fetchall()
+        rows = c.fetchall()
+        # Explicitly cast coordinates to float for each route
+        for r in rows:
+            r['start_lat'] = float(r['start_lat'])
+            r['start_lng'] = float(r['start_lng'])
+            r['end_lat'] = float(r['end_lat'])
+            r['end_lng'] = float(r['end_lng'])
+        return rows
 
 @with_db
 def update_route_time(route_id, normal_time, state, conn=None):
