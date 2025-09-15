@@ -519,7 +519,7 @@ class AddRouteModal(discord.ui.Modal):
 
         self.route_name = discord.ui.TextInput(
             label="Route name",
-            placeholder="Sea View - Umbilo [R107]",
+            placeholder="Sea View - Umbilo [R102]",
             max_length=100
         )
         self.start_coord = discord.ui.TextInput(
