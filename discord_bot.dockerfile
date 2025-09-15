@@ -27,9 +27,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN mkdir -p /app/data/maps
 
 # --------------------
-# Create CLI alias
+# Create CLI aliases
 # --------------------
-RUN echo '#!/bin/bash\npython3 /app/route_manager.py' > /usr/local/bin/menu \
+RUN printf '#!/bin/sh\npython3 /app/route_manager.py\n' > /usr/local/bin/menu \
     && chmod +x /usr/local/bin/menu
 
 # --------------------
