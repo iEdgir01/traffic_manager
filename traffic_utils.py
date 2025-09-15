@@ -32,11 +32,11 @@ MAPS_DIR.mkdir(parents=True, exist_ok=True)
 def get_db_connection():
     """Get a PostgreSQL database connection"""
     return psycopg2.connect(
-        host=DB_HOST,
-        port=DB_PORT,
-        database=DB_NAME,
-        user=DB_USER,
-        password=DB_PASSWORD,
+        host=POSTGRES_HOST,
+        port=POSTGRES_PORT,
+        database=POSTGRES_DB,
+        user=POSTGRES_USER,
+        password=POSTGRES_PASSWORD,
         cursor_factory=psycopg2.extras.RealDictCursor
     )
 
