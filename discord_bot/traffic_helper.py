@@ -1863,6 +1863,7 @@ def attach_bot_events(bot):
     async def on_message(message):
         # Update heartbeat on message activity (light health check)
         health_monitor.record_heartbeat()
+        await bot.process_commands(message)
 
     @bot.command()
     async def menu(ctx):
