@@ -1334,10 +1334,16 @@ class TrafficPaginationView(View):
         """Generate embed and attachments for current page"""
         if _shutting_down:
             return None, []
-            
+
         try:
+            print(f"DEBUG: get_page_embed() - current_page={self.current_page}, total_results={len(self.results)}")
             result = self.results[self.current_page]
+            print(f"DEBUG: get_page_embed() - result keys: {result.keys()}")
             route = result["route"]
+            print(f"DEBUG: get_page_embed() - route type: {type(route)}")
+            print(f"DEBUG: get_page_embed() - route keys: {route.keys() if hasattr(route, 'keys') else 'No keys method'}")
+            print(f"DEBUG: get_page_embed() - route data: {route}")
+
             # Access route data using keys instead of unpacking to ensure proper types
             r_id = route['id']
             name = route['name']

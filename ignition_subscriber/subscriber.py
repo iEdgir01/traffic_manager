@@ -155,8 +155,8 @@ def main():
         monitor.start()
     except KeyboardInterrupt:
         logger.info("Ignition Monitor stopped by user")
-    except Exception as e:
-        logger.error(f"Ignition Monitor crashed: {e}")
+    except Exception as exc:
+        logger.error(f"Ignition Monitor crashed: {exc}")
         raise
 
 

@@ -78,6 +78,10 @@ async def post_traffic_alerts_async():
         async with aiohttp.ClientSession() as session:
             for route in routes:
                 try:
+                    print(f"DEBUG: notify - route type: {type(route)}")
+                    print(f"DEBUG: notify - route keys: {route.keys() if hasattr(route, 'keys') else 'No keys method'}")
+                    print(f"DEBUG: notify - route data: {route}")
+
                     route_id = route["id"]
                     name = route["name"]
                     start_lat = route["start_lat"]
@@ -95,6 +99,9 @@ async def post_traffic_alerts_async():
                     baseline = calculate_baseline(historical_data)
                     logger.debug(f"Baseline calculated for {name}")
 
+                    print(f"DEBUG: notify - calling check_route_traffic with: "
+                          f"start={start_lat},{start_lng}, end={end_lat},{end_lng}, baseline={baseline}")
+
                     # Run traffic check in a thread (blocking function)
                     traffic = await run_in_thread(
                         check_route_traffic,
@@ -102,6 +109,8 @@ async def post_traffic_alerts_async():
                         f"{end_lat},{end_lng}",
                         baseline
                     )
+
+                    print(f"DEBUG: notify - traffic result: {traffic}")
                     if not traffic:
                         logger.warning(f"No traffic data returned for {name}")
                         continue
@@ -145,6 +154,10 @@ async def post_traffic_alerts_async():
                     await run_in_thread(update_last_state, route_id, current_state)
 
                 except Exception as e:
+                    print(f"DEBUG: notify - Exception in route processing: {e}")
+                    print(f"DEBUG: notify - Exception type: {type(e)}")
+                    import traceback
+                    print(f"DEBUG: notify - Traceback: {traceback.format_exc()}")
                     logger.error(f"Error processing route '{route.get('name','Unknown')}': {e}")
 
         if alerts_posted == 0:
