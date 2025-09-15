@@ -268,7 +268,9 @@ def set_thresholds(thresholds: List[Dict[str, Any]]) -> None:
 
 def reset_thresholds() -> None:
     """Reset traffic detection thresholds to default values."""
+    print("Resetting thresholds to defaults...")
     set_config("thresholds", DEFAULT_THRESHOLDS)
+    print("Thresholds reset successfully")
 
 def get_dynamic_thresholds(distance_km: float) -> Tuple[float, float, int, int]:
     """Get appropriate traffic thresholds for route distance.
@@ -285,7 +287,15 @@ def get_dynamic_thresholds(distance_km: float) -> Tuple[float, float, int, int]:
         if threshold["min_km"] <= distance_km <= threshold["max_km"]:
             return (threshold["factor_total"], threshold["factor_step"],
                    threshold["delay_total"], threshold["delay_step"])
-    return thresholds[-1]["factor_total"], thresholds[-1]["factor_step"], thresholds[-1]["delay_total"], thresholds[-1]["delay_step"]
+
+    # Fallback to last threshold if no match found
+    if thresholds:
+        last_threshold = thresholds[-1]
+        return (last_threshold["factor_total"], last_threshold["factor_step"],
+                last_threshold["delay_total"], last_threshold["delay_step"])
+
+    # Ultimate fallback if no thresholds exist
+    return (2.0, 3.0, 15, 5)
 
 # ---------------------
 # Traffic checking
@@ -309,6 +319,9 @@ def check_route_traffic(origin: str, destination: str, baseline: Optional[float]
 
         Returns None if API call fails or no routes found.
     """
+    if not API_KEY:
+        raise ValueError("GOOGLE_MAPS_API_KEY environment variable not set")
+
     resp = requests.get(
         "https://maps.googleapis.com/maps/api/directions/json",
         params={
@@ -322,14 +335,21 @@ def check_route_traffic(origin: str, destination: str, baseline: Optional[float]
 
     try:
         data = resp.json()
-    except Exception:
-        print("Invalid response:", resp.text)
-        return None
+    except Exception as exc:
+        print(f"Invalid response from Google Maps API: {resp.text}")
+        raise RuntimeError(f"Failed to parse Google Maps API response: {exc}") from exc
 
     if not data.get("routes"):
+        if data.get("error_message"):
+            raise RuntimeError(f"Google Maps API error: {data['error_message']}")
         return None
 
-    fastest = min(data["routes"], key=lambda r: r["legs"][0]["duration_in_traffic"]["value"])
+    # Filter routes that have traffic data
+    routes_with_traffic = [r for r in data["routes"] if r["legs"][0].get("duration_in_traffic")]
+    if not routes_with_traffic:
+        raise RuntimeError("No routes with traffic data available")
+
+    fastest = min(routes_with_traffic, key=lambda r: r["legs"][0]["duration_in_traffic"]["value"])
     leg = fastest["legs"][0]
 
     total_normal = leg["duration"]["value"] // 60
