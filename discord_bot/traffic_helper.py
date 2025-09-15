@@ -1,16 +1,23 @@
+import os
+import re
+import sys
+import math
+import json
+import signal
+import atexit
+import asyncio
+import logging
+import threading
+import contextlib
+from io import BytesIO
+from pathlib import Path
+import concurrent.futures
+from datetime import datetime
+from PIL import Image, ImageDraw, ImageFont
 import discord
 from discord.ext import commands
 from discord.ui import View, Button, Select, Modal, TextInput
 from discord import SelectOption, File, Embed
-import os
-import math
-import re
-import asyncio
-from datetime import datetime
-import logging
-import json
-import threading
-import contextlib
 from traffic_utils import (
     init_db,
     get_route_map,
@@ -25,12 +32,26 @@ from traffic_utils import (
     add_route,
     delete_route
 )
-from PIL import Image, ImageDraw, ImageFont
-from io import BytesIO
-import concurrent.futures
-from pathlib import Path
+# ---------------------
+# logging
+# ---------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler("/app/data/discord_bot.log") if os.path.exists("/app/data") else logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
-logging.basicConfig(level=logging.INFO)
+# Configure Discord logging
+discord_logger = logging.getLogger('discord')
+discord_logger.setLevel(logging.INFO)
+
+# Add startup message
+print("Discord Bot starting...")
+logger.info("Discord Bot module loaded")
 
 # ---------------------
 # Docker environment variables
@@ -1930,3 +1951,33 @@ async def run_discord_bot():
                 await asyncio.sleep(delay)
 
     await soft_cleanup()
+
+if __name__ == "__main__":
+    import signal
+    import atexit
+    
+    def signal_handler(signum, frame):
+        logger.info(f"Received signal {signum}")
+        force_permanent_shutdown()
+        sys.exit(0)
+    
+    def cleanup_on_exit():
+        if not _force_permanent_shutdown:
+            logger.info("Exit cleanup triggered")
+            force_permanent_shutdown()
+    
+    # Register cleanup handlers
+    atexit.register(cleanup_on_exit)
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+    
+    try:
+        logger.info("Starting Discord Bot...")
+        asyncio.run(run_discord_bot())
+    except KeyboardInterrupt:
+        logger.info("Discord Bot manually stopped")
+    except Exception as e:
+        logger.error(f"Discord Bot crashed: {e}")
+        raise
+    finally:
+        logger.info("Discord Bot shutdown complete")
