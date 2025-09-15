@@ -138,7 +138,7 @@ async def post_traffic_alerts_async():
                                 {"name": "Normal Time", "value": f"{traffic['total_normal']} min", "inline": True},
                                 {"name": "Delay", "value": f"{traffic['total_delay']} min", "inline": True},
                                 {"name": "Heavy Segments", "value": summarize_segments(traffic['heavy_segments']) or 'None', "inline": False},
-                                {"name": "Read Aloud", "value": sentence, "inline": False}
+                                {"name": "Summary", "value": sentence, "inline": False}
                             ]
                         }
 
