@@ -47,14 +47,16 @@ def get_last_state(route_id, conn=None):
     with conn.cursor() as cur:
         cur.execute("SELECT last_state FROM routes WHERE id = %s", (route_id,))
         row = cur.fetchone()
-        return row[0] if row else None
+        return row["last_state"] if row else None
 
 
 @with_db
-def update_last_state(route_id, state, conn=None):
+def update_last_state(route_id, new_state, conn=None):
     with conn.cursor() as cur:
-        cur.execute("UPDATE routes SET last_state = %s WHERE id = %s", (state, route_id))
-    conn.commit()
+        cur.execute(
+            "UPDATE routes SET last_state = %s WHERE id = %s",
+            (new_state, route_id),
+        )
 
 
 # ---------------------

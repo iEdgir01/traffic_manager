@@ -1171,7 +1171,7 @@ class CheckAllRoutesButton(Button):
                         "traffic": traffic_result
                     })
                     # Update database with traffic results
-                    route_id = route[0]
+                    route_id = route["id"]
                     if "error" not in traffic_result:
                         await run_in_thread(update_route_time, route_id, traffic_result["total_normal"], traffic_result["state"])
                 except RuntimeError as e:
@@ -1182,16 +1182,28 @@ class CheckAllRoutesButton(Button):
                         "traffic": {"error": str(e), "state": "Error"}
                     })
                 except Exception as e:
-                    logging.error(f"Failed to check traffic for route {route[1]}: {e}")
+                    logging.error(f"Failed to check traffic for route {route['name']}: {e}")
                     results.append({
                         "route": route,
                         "traffic": {"error": str(e), "state": "Error"}
                     })
 
+            print(f"DEBUG: Creating TrafficPaginationView with {len(results)} results")
+            for i, result in enumerate(results):
+                print(f"DEBUG: Result {i}: route={type(result.get('route'))}, traffic={type(result.get('traffic'))}")
+                if 'route' in result:
+                    print(f"DEBUG: Route data: {result['route']}")
+                if 'traffic' in result:
+                    print(f"DEBUG: Traffic data: {result['traffic']}")
+
             view = TrafficPaginationView(results, original_message=interaction.message)
+            print("DEBUG: TrafficPaginationView created successfully")
+
             embed, attachments = await view.get_page_embed()
+            print("DEBUG: get_page_embed completed successfully")
 
             await interaction.edit_original_response(embed=embed, attachments=attachments, view=view)
+            print("DEBUG: interaction.edit_original_response completed successfully")
 
         except RuntimeError as e:
             if "shutdown" in str(e).lower():
