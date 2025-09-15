@@ -108,7 +108,7 @@ def update_route_time(route_id, normal_time, state, conn=None):
             (normal_time, state, json.dumps(historical), route_id)
         )
 
-@with_db
+
 @with_db
 def add_route(name, start_lat, start_lng, end_lat, end_lng, conn=None):
     # Ensure the coordinates are floats
