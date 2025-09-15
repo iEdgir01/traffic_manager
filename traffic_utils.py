@@ -1,12 +1,16 @@
+"""Traffic monitoring utilities and database operations."""
+
 import os
 import json
-import psycopg2
-import psycopg2.extras
-from pathlib import Path
-from datetime import datetime, timezone
-import requests
 import html
 import re
+from pathlib import Path
+from datetime import datetime, timezone
+from typing import Optional, List, Dict, Any, Tuple
+
+import psycopg2
+import psycopg2.extras
+import requests
 
 # ---------------------
 # Environment variables
@@ -29,8 +33,8 @@ MAPS_DIR.mkdir(parents=True, exist_ok=True)
 # ---------------------
 # DB Connection
 # ---------------------
-def get_db_connection():
-    """Get a PostgreSQL database connection"""
+def get_db_connection() -> psycopg2.extensions.connection:
+    """Get a PostgreSQL database connection."""
     return psycopg2.connect(
         host=POSTGRES_HOST,
         port=POSTGRES_PORT,
@@ -40,15 +44,21 @@ def get_db_connection():
         cursor_factory=psycopg2.extras.RealDictCursor
     )
 
-def with_db(fn):
+def with_db(func):
     """
     Decorator that injects a managed PostgreSQL connection.
     Commits automatically and ensures cleanup.
+
+    Args:
+        func: Function to decorate
+
+    Returns:
+        Wrapped function with database connection management
     """
     def wrapper(*args, **kwargs):
         with get_db_connection() as conn:
             try:
-                result = fn(*args, conn=conn, **kwargs)
+                result = func(*args, conn=conn, **kwargs)
                 conn.commit()
                 return result
             except Exception:
@@ -60,9 +70,14 @@ def with_db(fn):
 # DB helpers
 # ---------------------
 @with_db
-def init_db(conn=None):
-    with conn.cursor() as c:
-        c.execute('''
+def init_db(conn=None) -> None:
+    """Initialize the database tables.
+
+    Args:
+        conn: Database connection (injected by decorator)
+    """
+    with conn.cursor() as cursor:
+        cursor.execute('''
             CREATE TABLE IF NOT EXISTS routes (
                 id SERIAL PRIMARY KEY,
                 name TEXT UNIQUE,
@@ -75,7 +90,7 @@ def init_db(conn=None):
                 historical_times TEXT
             )
         ''')
-        c.execute('''
+        cursor.execute('''
             CREATE TABLE IF NOT EXISTS config (
                 id SERIAL PRIMARY KEY,
                 name TEXT UNIQUE,
@@ -84,58 +99,104 @@ def init_db(conn=None):
         ''')
 
 @with_db
-def get_routes(conn=None):
-    with conn.cursor() as c:
-        c.execute('SELECT * FROM routes')
-        rows = c.fetchall()
+def get_routes(conn=None) -> List[Dict[str, Any]]:
+    """Get all routes from the database with coordinate type casting.
+
+    Args:
+        conn: Database connection (injected by decorator)
+
+    Returns:
+        List of route dictionaries with float coordinates
+    """
+    with conn.cursor() as cursor:
+        cursor.execute('SELECT * FROM routes')
+        rows = cursor.fetchall()
         # Explicitly cast coordinates to float for each route
-        for r in rows:
-            r['start_lat'] = float(r['start_lat'])
-            r['start_lng'] = float(r['start_lng'])
-            r['end_lat'] = float(r['end_lat'])
-            r['end_lng'] = float(r['end_lng'])
+        for row in rows:
+            row['start_lat'] = float(row['start_lat'])
+            row['start_lng'] = float(row['start_lng'])
+            row['end_lat'] = float(row['end_lat'])
+            row['end_lng'] = float(row['end_lng'])
         return rows
 
 @with_db
-def update_route_time(route_id, normal_time, state, conn=None):
-    with conn.cursor() as c:
-        if route_id is None:
-            return
-            
-        c.execute('SELECT historical_times FROM routes WHERE id=%s', (route_id,))
-        row = c.fetchone()
+def update_route_time(route_id: Optional[int], normal_time: int, state: str, conn=None) -> None:
+    """Update route's traffic timing and historical data.
+
+    Args:
+        route_id: Route database ID
+        normal_time: Normal travel time in minutes
+        state: Traffic state ('Normal', 'Heavy', etc.)
+        conn: Database connection (injected by decorator)
+    """
+    if route_id is None:
+        return
+
+    with conn.cursor() as cursor:
+        cursor.execute('SELECT historical_times FROM routes WHERE id=%s', (route_id,))
+        row = cursor.fetchone()
         historical = json.loads(row['historical_times']) if row and row['historical_times'] else []
 
-        entry = {"timestamp": datetime.now().isoformat(), "normal_time": normal_time, "state": state}
+        entry = {
+            "timestamp": datetime.now().isoformat(),
+            "normal_time": normal_time,
+            "state": state
+        }
         historical.append(entry)
         historical = historical[-20:]  # keep last 20 entries
 
-        c.execute(
+        cursor.execute(
             'UPDATE routes SET last_normal_time=%s, last_state=%s, historical_times=%s WHERE id=%s',
             (normal_time, state, json.dumps(historical), route_id)
         )
 
 
 @with_db
-def add_route(name, start_lat, start_lng, end_lat, end_lng, conn=None):
+def add_route(name: str, start_lat: float, start_lng: float,
+              end_lat: float, end_lng: float, conn=None) -> None:
+    """Add a new route to the database.
+
+    Args:
+        name: Route name
+        start_lat: Starting latitude
+        start_lng: Starting longitude
+        end_lat: Ending latitude
+        end_lng: Ending longitude
+        conn: Database connection (injected by decorator)
+    """
     # Ensure the coordinates are floats
     start_lat = float(start_lat)
     start_lng = float(start_lng)
     end_lat = float(end_lat)
     end_lng = float(end_lng)
 
-    with conn.cursor() as c:
-        c.execute("""
-            INSERT INTO routes (name, start_lat, start_lng, end_lat, end_lng, last_normal_time, last_state, historical_times)
+    with conn.cursor() as cursor:
+        cursor.execute("""
+            INSERT INTO routes (name, start_lat, start_lng, end_lat, end_lng,
+                              last_normal_time, last_state, historical_times)
             VALUES (%s, %s, %s, %s, %s, NULL, 'Normal', '[]')
         """, (name, start_lat, start_lng, end_lat, end_lng))
 
 @with_db
-def delete_route(name, conn=None):
-    with conn.cursor() as c:
-        c.execute("DELETE FROM routes WHERE name=%s", (name,))
+def delete_route(name: str, conn=None) -> None:
+    """Delete a route from the database.
 
-def calculate_baseline(historical_times):
+    Args:
+        name: Route name to delete
+        conn: Database connection (injected by decorator)
+    """
+    with conn.cursor() as cursor:
+        cursor.execute("DELETE FROM routes WHERE name=%s", (name,))
+
+def calculate_baseline(historical_times: List[Dict[str, Any]]) -> Optional[float]:
+    """Calculate baseline travel time from historical data.
+
+    Args:
+        historical_times: List of historical traffic entries
+
+    Returns:
+        Average normal time in minutes, or None if no data
+    """
     if not historical_times:
         return None
     times = [entry["normal_time"] for entry in historical_times if "normal_time" in entry]
@@ -145,17 +206,33 @@ def calculate_baseline(historical_times):
 # Thresholds (config table)
 # ---------------------
 @with_db
-def get_config(name, conn=None):
-    with conn.cursor() as c:
-        c.execute('SELECT value FROM config WHERE name=%s', (name,))
-        row = c.fetchone()
+def get_config(name: str, conn=None) -> Optional[Any]:
+    """Retrieve configuration value from database.
+
+    Args:
+        name: Configuration key name
+        conn: Database connection (injected by decorator)
+
+    Returns:
+        Parsed JSON configuration value, or None if not found
+    """
+    with conn.cursor() as cursor:
+        cursor.execute('SELECT value FROM config WHERE name=%s', (name,))
+        row = cursor.fetchone()
         return json.loads(row['value']) if row and row['value'] else None
 
 @with_db
-def set_config(name, value, conn=None):
-    with conn.cursor() as c:
+def set_config(name: str, value: Any, conn=None) -> None:
+    """Store configuration value in database.
+
+    Args:
+        name: Configuration key name
+        value: Value to store (will be JSON serialized)
+        conn: Database connection (injected by decorator)
+    """
+    with conn.cursor() as cursor:
         json_value = json.dumps(value)
-        c.execute('''
+        cursor.execute('''
             INSERT INTO config (name, value) VALUES (%s, %s)
             ON CONFLICT(name) DO UPDATE SET value=%s
         ''', (name, json_value, json_value))
@@ -168,30 +245,70 @@ DEFAULT_THRESHOLDS = [
     {"min_km": 20, "max_km": 50, "factor_total": 1.5, "factor_step": 4, "delay_total": 30, "delay_step": 10}
 ]
 
-def get_thresholds():
+def get_thresholds() -> List[Dict[str, Any]]:
+    """Get traffic detection thresholds, creating defaults if needed.
+
+    Returns:
+        List of threshold dictionaries with min_km, max_km, factor_total,
+        factor_step, delay_total, and delay_step keys
+    """
     thresholds = get_config("thresholds")
     if not thresholds:
         set_config("thresholds", DEFAULT_THRESHOLDS)
         thresholds = DEFAULT_THRESHOLDS
     return thresholds
 
-def set_thresholds(thresholds):
+def set_thresholds(thresholds: List[Dict[str, Any]]) -> None:
+    """Store traffic detection thresholds.
+
+    Args:
+        thresholds: List of threshold dictionaries to store
+    """
     set_config("thresholds", thresholds)
 
-def reset_thresholds():
+def reset_thresholds() -> None:
+    """Reset traffic detection thresholds to default values."""
     set_config("thresholds", DEFAULT_THRESHOLDS)
 
-def get_dynamic_thresholds(distance_km):
+def get_dynamic_thresholds(distance_km: float) -> Tuple[float, float, int, int]:
+    """Get appropriate traffic thresholds for route distance.
+
+    Args:
+        distance_km: Route distance in kilometers
+
+    Returns:
+        Tuple of (factor_total, factor_step, delay_total, delay_step)
+        for the matching distance range
+    """
     thresholds = get_thresholds()
-    for t in thresholds:
-        if t["min_km"] <= distance_km <= t["max_km"]:
-            return t["factor_total"], t["factor_step"], t["delay_total"], t["delay_step"]
+    for threshold in thresholds:
+        if threshold["min_km"] <= distance_km <= threshold["max_km"]:
+            return (threshold["factor_total"], threshold["factor_step"],
+                   threshold["delay_total"], threshold["delay_step"])
     return thresholds[-1]["factor_total"], thresholds[-1]["factor_step"], thresholds[-1]["delay_total"], thresholds[-1]["delay_step"]
 
 # ---------------------
 # Traffic checking
 # ---------------------
-def check_route_traffic(origin, destination, baseline=None):
+def check_route_traffic(origin: str, destination: str, baseline: Optional[float] = None) -> Optional[Dict[str, Any]]:
+    """Check current traffic conditions for a route using Google Maps API.
+
+    Args:
+        origin: Starting coordinate as "lat,lng" string
+        destination: Ending coordinate as "lat,lng" string
+        baseline: Historical baseline travel time in minutes (optional)
+
+    Returns:
+        Dictionary containing traffic analysis results with keys:
+        - summary: Route description
+        - start_address, end_address: Human-readable addresses
+        - total_normal, total_live, total_delay: Travel times in minutes
+        - distance_km: Route distance
+        - heavy_segments: List of congested segments
+        - state: "Heavy" or "Normal"
+
+        Returns None if API call fails or no routes found.
+    """
     resp = requests.get(
         "https://maps.googleapis.com/maps/api/directions/json",
         params={
@@ -212,7 +329,6 @@ def check_route_traffic(origin, destination, baseline=None):
     if not data.get("routes"):
         return None
 
-    # Pick the fastest route
     fastest = min(data["routes"], key=lambda r: r["legs"][0]["duration_in_traffic"]["value"])
     leg = fastest["legs"][0]
 
@@ -221,25 +337,18 @@ def check_route_traffic(origin, destination, baseline=None):
     total_delay = max(0, total_live - total_normal)
     distance_km = leg["distance"]["value"] / 1000
 
-    # Baseline (historical or fallback)
     effective_normal = baseline if baseline else total_normal
 
-    # Thresholds
     factor_total, factor_step, delay_total, delay_step = get_dynamic_thresholds(distance_km)
 
-    # -----------------------
-    # Heavy traffic detection
-    # -----------------------
     is_heavy = False
     heavy_segments = []
 
-    # a) Route-level check
     if total_delay >= delay_total:
         is_heavy = True
     elif effective_normal > 0 and total_live >= effective_normal * factor_total:
         is_heavy = True
 
-    # b) Step-level check
     for step in leg["steps"]:
         if "duration_in_traffic" not in step:
             continue
@@ -274,7 +383,17 @@ def check_route_traffic(origin, destination, baseline=None):
         "state": state
     }
 
-def summarize_segments(segments, limit=4):
+def summarize_segments(segments: List[Dict[str, Any]], limit: int = 4) -> str:
+    """Create a formatted summary of heavy traffic segments.
+
+    Args:
+        segments: List of segment dictionaries from traffic analysis
+        limit: Maximum number of segments to include in summary
+
+    Returns:
+        Formatted string summarizing heavy traffic segments,
+        or empty string if no segments provided
+    """
     if not segments:
         return ""
     lines = [f"- {s['instruction']}: {s['normal']}→{s['live']} (+{s['delay']}m)" for s in segments[:limit]]
@@ -285,10 +404,17 @@ def summarize_segments(segments, limit=4):
 # ---------------------
 # Process all routes
 # ---------------------
-def process_all_routes(include_segments=False):
-    """
-    Processes all routes, updates DB, and returns results.
-    Set include_segments=True if you want heavy_segments in the result.
+def process_all_routes(include_segments: bool = False) -> List[Dict[str, Any]]:
+    """Process traffic conditions for all routes and update database.
+
+    Args:
+        include_segments: Whether to include heavy_segments data in results
+
+    Returns:
+        List of dictionaries containing route traffic analysis results.
+        Each dictionary contains route_id, name, state, distance, live time,
+        delay, and total_normal time. If include_segments=True, also includes
+        heavy_segments list.
     """
     init_db()
     routes = get_routes()
@@ -298,9 +424,14 @@ def process_all_routes(include_segments=False):
 
     results = []
     for route in routes:
-        route_id, name, start_lat, start_lng, end_lat, end_lng = route['id'], route['name'], route['start_lat'], route['start_lng'], route['end_lat'], route['end_lng']
-        last_normal, last_state, historical_json = route.get('last_normal_time'), route.get('last_state'), route.get('historical_times')
-        
+        route_id = route['id']
+        name = route['name']
+        start_lat = route['start_lat']
+        start_lng = route['start_lng']
+        end_lat = route['end_lat']
+        end_lng = route['end_lng']
+        historical_json = route.get('historical_times')
+
         historical_times = json.loads(historical_json) if historical_json else []
         baseline = calculate_baseline(historical_times)
 
@@ -323,24 +454,34 @@ def process_all_routes(include_segments=False):
 
         results.append(result)
 
-    # ---------------------
-    # Update DB
-    # ---------------------
-    for r in results:
+    for result in results:
         try:
-            update_route_time(r["route_id"], r["total_normal"], r["state"])
-        except Exception as e:
-            print(f"Failed to update route {r['name']} in DB: {e}")
+            update_route_time(result["route_id"], result["total_normal"], result["state"])
+        except Exception as exc:
+            print(f"Failed to update route {result['name']} in DB: {exc}")
 
     return results
 
 # ---------------------
 # Map generation
 # ---------------------
-def get_route_map(route_name, start_lat, start_lng, end_lat, end_lng):
-    """
-    Generate a road-following map PNG for a route.
-    Saves to ./data/maps/{route_name}.png
+def get_route_map(route_name: str, start_lat: float, start_lng: float,
+                  end_lat: float, end_lng: float) -> str:
+    """Generate a road-following map PNG for a route using Google Maps APIs.
+
+    Args:
+        route_name: Name of the route for file naming
+        start_lat: Starting latitude coordinate
+        start_lng: Starting longitude coordinate
+        end_lat: Ending latitude coordinate
+        end_lng: Ending longitude coordinate
+
+    Returns:
+        Path to the generated map image file
+
+    Raises:
+        ValueError: If Google Maps API key is not configured
+        RuntimeError: If Google Maps API calls fail
     """
     map_path = os.path.join(MAPS_DIR, f"{route_name}.png")
 

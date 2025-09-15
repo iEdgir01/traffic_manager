@@ -769,8 +769,14 @@ class ListRoutesButton(Button):
             for row in rows:
                 if _shutting_down:
                     return
-                    
-                route_id, name, start_lat, start_lng, end_lat, end_lng, *_ = row
+
+                # Access row data using keys instead of unpacking to ensure proper types
+                route_id = row['id']
+                name = row['name']
+                start_lat = row['start_lat']
+                start_lng = row['start_lng']
+                end_lat = row['end_lat']
+                end_lng = row['end_lng']
                 map_path = os.path.join(MAP_DIR, f"{name}.png")
                 
                 if not os.path.isfile(map_path):
@@ -978,7 +984,13 @@ class RemoveRouteButton(Button):
 
             routes_data = []
             for row in rows:
-                route_id, name, start_lat, start_lng, end_lat, end_lng = row[0], row[1], row[2], row[3], row[4], row[5]
+                # Access row data using keys instead of indices to ensure proper types
+                route_id = row['id']
+                name = row['name']
+                start_lat = row['start_lat']
+                start_lng = row['start_lng']
+                end_lat = row['end_lat']
+                end_lng = row['end_lng']
                 routes_data.append({
                     "name": name,
                     "start_lat": start_lat,
@@ -1109,7 +1121,16 @@ class CheckAllRoutesButton(Button):
                 if _shutting_down:
                     return
                     
-                route_id, name, start_lat, start_lng, end_lat, end_lng, last_normal_time, last_state, historical_json = r
+                # Access row data using keys instead of unpacking to ensure proper types
+                route_id = r['id']
+                name = r['name']
+                start_lat = r['start_lat']
+                start_lng = r['start_lng']
+                end_lat = r['end_lat']
+                end_lng = r['end_lng']
+                last_normal_time = r['last_normal_time']
+                last_state = r['last_state']
+                historical_json = r['historical_times']
                 baseline = calculate_baseline([] if not historical_json else json.loads(historical_json))
                 
                 task = async_check_traffic(f"{start_lat},{start_lng}", f"{end_lat},{end_lng}", baseline)
@@ -1186,7 +1207,14 @@ class SelectRoute(Select):
         try:
             selected = self.values[0]
             route = self.routes[selected]
-            route_id, name, start_lat, start_lng, end_lat, end_lng, _, _, historical_json = route
+            # Access route data using keys instead of unpacking to ensure proper types
+            route_id = route['id']
+            name = route['name']
+            start_lat = route['start_lat']
+            start_lng = route['start_lng']
+            end_lat = route['end_lat']
+            end_lng = route['end_lng']
+            historical_json = route['historical_times']
             
             await show_loading_state(interaction, f"Checking Traffic - {name}", "Fetching current traffic conditions...")
 
@@ -1286,7 +1314,14 @@ class TrafficPaginationView(View):
         try:
             result = self.results[self.current_page]
             route = result["route"]
-            r_id, name, start_lat, start_lng, end_lat, end_lng, _, _, historical_json = route
+            # Access route data using keys instead of unpacking to ensure proper types
+            r_id = route['id']
+            name = route['name']
+            start_lat = route['start_lat']
+            start_lng = route['start_lng']
+            end_lat = route['end_lat']
+            end_lng = route['end_lng']
+            historical_json = route['historical_times']
             traffic = result["traffic"]
 
             # Determine color based on traffic state
@@ -1443,8 +1478,6 @@ class TrafficPaginationView(View):
                     item.disabled = True
             
             # Try to update the message to show disabled state
-            # Note: We need a reference to the message to edit it
-            # This should be set by the calling code after sending the message
             if hasattr(self, '_message') and self._message:
                 try:
                     await self._message.edit(view=self)

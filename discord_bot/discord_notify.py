@@ -1,16 +1,23 @@
+"""Discord webhook notification service for traffic alerts.
+
+This module handles sending traffic condition notifications to Discord
+channels via webhooks when significant traffic changes are detected.
+"""
+
 import os
 import json
 import asyncio
 import logging
 import sys
-from datetime import datetime, timezone, timezone
+from datetime import datetime, timezone
+from typing import List, Dict, Any, Optional
+
 import aiohttp
 from traffic_utils import (
     with_db, summarize_segments, get_routes,
     calculate_baseline, check_route_traffic, update_route_time
 )
 
-# Configure logging for standalone operation
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -26,10 +33,6 @@ if not WEBHOOK_URL:
     raise ValueError("Missing environment variable: DISCORD_WEBHOOK_URL")
 
 logger.info("Discord Notify module loaded")
-
-WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
-if not WEBHOOK_URL:
-    raise ValueError("Missing environment variable: DISCORD_WEBHOOK_URL")
 
 
 # ---------------------

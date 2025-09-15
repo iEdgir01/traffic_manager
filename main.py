@@ -1,11 +1,18 @@
+"""Main application orchestrator for Traffic Manager.
+
+This module coordinates the ignition subscriber and Discord bot services,
+providing automatic restart capabilities and graceful shutdown handling.
+"""
+
 import os
-import threading
-import asyncio
-import logging
-import time
 import sys
+import time
 import signal
 import atexit
+import asyncio
+import logging
+import threading
+
 from ignition_subscriber.subscriber import IgnitionMonitor
 from discord_bot.traffic_helper import run_discord_bot, force_permanent_shutdown
 
@@ -31,12 +38,16 @@ _force_shutdown = False  # Only True when we REALLY want to stop
 # ----------------------------
 # Ignition monitor
 # ----------------------------
-def start_ignition_monitor():
-    """Start MQTT ignition monitor with restart capability"""
+def start_ignition_monitor() -> None:
+    """Start MQTT ignition monitor with restart capability.
+
+    Runs in a background thread and automatically restarts the monitor
+    up to 10 times if it crashes. Uses exponential backoff for restart delays.
+    """
     max_restarts = 10
     restart_count = 0
-    
-    logger.info("Ignition monitor thread started")  # ADD THIS
+
+    logger.info("Ignition monitor thread started")
     
     while restart_count < max_restarts and not _force_shutdown:
         try:
@@ -60,9 +71,13 @@ def start_ignition_monitor():
 # ----------------------------
 # Discord bot infinite runner
 # ----------------------------
-async def run_discord_bot_infinite():
-    """Bot runner that handles restarts more gracefully"""
-    global _force_shutdown
+async def run_discord_bot_infinite() -> None:
+    """Bot runner that handles restarts more gracefully.
+
+    Implements exponential backoff for persistent failures and automatic
+    restart capabilities with failure counting and recovery logic.
+    """
+    global _force_shutdown  # pylint: disable=global-statement
     
     restart_count = 0
     consecutive_failures = 0
@@ -113,23 +128,29 @@ async def run_discord_bot_infinite():
 # ----------------------------
 # Signal handlers
 # ----------------------------
-def signal_handler(signum, frame):
-    global _force_shutdown
+def signal_handler(signum: int, frame) -> None:  # pylint: disable=unused-argument
+    """Handle system signals for graceful shutdown.
+
+    Args:
+        signum: Signal number received
+        frame: Current stack frame (unused)
+    """
+    global _force_shutdown  # pylint: disable=global-statement
     logger.info(f"Received signal {signum}")
     _force_shutdown = True
     force_permanent_shutdown()
-    
+
     if signum == signal.SIGTERM:
         logger.info("SIGTERM received - forcing permanent shutdown")
     elif signum == signal.SIGINT:
         logger.info("SIGINT received - forcing permanent shutdown")
-    
+
     # Let the main loop handle the exit instead of forcing it here
 
-def cleanup_on_exit():
-    """Cleanup function for atexit"""
-    global _force_shutdown
-    
+def cleanup_on_exit() -> None:
+    """Cleanup function for atexit."""
+    global _force_shutdown  # pylint: disable=global-statement
+
     if not _force_shutdown:
         _force_shutdown = True
         logger.info("Exit cleanup triggered - forcing permanent shutdown")
@@ -138,18 +159,23 @@ def cleanup_on_exit():
 # ----------------------------
 # Discord bot wrapper
 # ----------------------------
-async def start_discord_bot():
-    """Run Discord bot with infinite restart capability"""
+async def start_discord_bot() -> None:
+    """Run Discord bot with infinite restart capability."""
     try:
         await run_discord_bot_infinite()
-    except Exception as e:
-        logger.error(f"Discord bot infinite runner failed: {e}")
+    except Exception as exc:
+        logger.error(f"Discord bot infinite runner failed: {exc}")
 
 # ----------------------------
 # Main entrypoint
 # ----------------------------
-def main():
-    global _force_shutdown
+def main() -> None:
+    """Main application entry point.
+
+    Coordinates startup of both ignition monitor and Discord bot,
+    handles graceful shutdown, and manages service lifecycle.
+    """
+    global _force_shutdown  # pylint: disable=global-statement
     
     # Register cleanup handlers
     atexit.register(cleanup_on_exit)
@@ -176,13 +202,13 @@ def main():
         logger.info("Application manually stopped (KeyboardInterrupt)")
         _force_shutdown = True
         force_permanent_shutdown()
-        
+
     except SystemExit:
         # Normal exit from signal handler - don't log as error
         logger.info("Application shutting down via system exit")
-        
-    except Exception as e:
-        logger.error(f"Application crashed: {e}")
+
+    except Exception as exc:
+        logger.error(f"Application crashed: {exc}")
         _force_shutdown = True
         force_permanent_shutdown()
         

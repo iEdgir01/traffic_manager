@@ -1,7 +1,10 @@
+"""CLI interface for traffic route management."""
+
 import os
 import sys
 import re
 from pathlib import Path
+from typing import Optional, Tuple
 
 from traffic_utils import (
     init_db,
@@ -29,6 +32,7 @@ MAPS_DIR.mkdir(parents=True, exist_ok=True)
 # CLI Colors
 # ---------------------
 class Colors:
+    """ANSI color codes for terminal output."""
     RESET = "\033[0m"
     RED = "\033[31m"
     GREEN = "\033[32m"
@@ -40,27 +44,59 @@ class Colors:
 # ---------------------
 # Helper: DMS parsing
 # ---------------------
-def dms_to_decimal(dms_str):
+def dms_to_decimal(dms_str: str) -> float:
+    """Convert DMS (Degrees Minutes Seconds) string to decimal degrees.
+
+    Args:
+        dms_str: DMS coordinate string (e.g., "33°55'12\"S")
+
+    Returns:
+        Decimal degrees as float
+
+    Raises:
+        ValueError: If DMS format is invalid
+    """
     dms_str = dms_str.strip()
-    match = re.fullmatch(r"(\d{1,3})°(\d{1,2})'(\d{1,2}(?:\.\d+)?)\"([NSEW])", dms_str, re.IGNORECASE)
+    match = re.fullmatch(r"(\d{1,3})°(\d{1,2})'(\d{1,2}(?:\.\d+)?)\"([NSEW])",
+                         dms_str, re.IGNORECASE)
     if not match:
         raise ValueError(f"Invalid DMS format: {dms_str}")
+
     degrees, minutes, seconds, direction = match.groups()
     decimal = float(degrees) + float(minutes)/60 + float(seconds)/3600
-    if direction.upper() in ['S','W']:
+
+    if direction.upper() in ['S', 'W']:
         decimal *= -1
+
     return decimal
 
-def parse_dms_pair(dms_pair):
+def parse_dms_pair(dms_pair: str) -> Tuple[float, float]:
+    """Parse a lat/lng pair from DMS strings.
+
+    Args:
+        dms_pair: Space-separated DMS coordinate pair
+
+    Returns:
+        Tuple of (latitude, longitude) as floats
+
+    Raises:
+        ValueError: If coordinate pair format is invalid
+    """
     parts = dms_pair.strip().split()
     if len(parts) != 2:
         raise ValueError(f"Invalid coordinate pair: {dms_pair}")
+
     return dms_to_decimal(parts[0]), dms_to_decimal(parts[1])
 
 # ---------------------
 # CRUD Routes
 # ---------------------
-def add_route_cli():
+def add_route_cli() -> None:
+    """Interactive CLI interface for adding a new route.
+
+    Prompts user for route name and DMS coordinates, validates input,
+    checks for duplicates, adds route to database, and generates map.
+    """
     os.system('cls' if os.name=='nt' else 'clear')
     print(f"{Colors.BLUE}=== Add Route ==={Colors.RESET}\n")
     name = input("Route name (or Enter to cancel): ").strip()
@@ -75,8 +111,8 @@ def add_route_cli():
     try:
         start_lat, start_lng = parse_dms_pair(start_dms)
         end_lat, end_lng = parse_dms_pair(end_dms)
-    except Exception as e:
-        print(f"{Colors.RED}⚠ Invalid DMS input: {e}{Colors.RESET}")
+    except Exception as exc:
+        print(f"{Colors.RED}⚠ Invalid DMS input: {exc}{Colors.RESET}")
         input(f"\n{Colors.CYAN}Press Enter to return to menu...{Colors.RESET}")
         return
 
@@ -87,15 +123,17 @@ def add_route_cli():
         input(f"\n{Colors.CYAN}Press Enter to return to menu...{Colors.RESET}")
         return
 
-    # Insert route using the function from traffic_utils
     add_route(name, start_lat, start_lng, end_lat, end_lng)
-
-    # Generate route map
     get_route_map(name, start_lat, start_lng, end_lat, end_lng)
     print(f"{Colors.GREEN}✅ Route '{name}' added successfully.{Colors.RESET}")
     input(f"\n{Colors.CYAN}Press Enter to return to menu...{Colors.RESET}")
 
-def list_routes():
+def list_routes() -> None:
+    """Display all routes with coordinates and map generation status.
+
+    Shows numbered list of routes with coordinates, last traffic state,
+    and map generation status. Attempts to generate missing maps.
+    """
     os.system('cls' if os.name=='nt' else 'clear')
     print(f"{Colors.BLUE}=== All Routes ==={Colors.RESET}\n")
     init_db()
@@ -105,20 +143,23 @@ def list_routes():
         input(f"\n{Colors.CYAN}Press Enter to return to menu...{Colors.RESET}")
         return
 
-    for idx, r in enumerate(routes, start=1):
-        route_name = r["name"]
+    for idx, route in enumerate(routes, start=1):
+        route_name = route["name"]
         map_path = MAPS_DIR / f"{route_name}.png"
         if not map_path.exists():
             try:
-                get_route_map(route_name, r["start_lat"], r["start_lng"], r["end_lat"], r["end_lng"])
+                get_route_map(route_name, route["start_lat"], route["start_lng"],
+                             route["end_lat"], route["end_lng"])
                 map_status = f"{Colors.GREEN}Generated{Colors.RESET}"
             except Exception:
                 map_status = f"{Colors.RED}Failed{Colors.RESET}"
         else:
             map_status = f"{Colors.GREEN}Exists{Colors.RESET}"
 
-        print(f"{Colors.YELLOW}{idx}.{Colors.RESET} {route_name} | Start: ({r['start_lat']},{r['start_lng']}) | "
-              f"End: ({r['end_lat']},{r['end_lng']}) | Last state: {r['last_state']} | Map: {map_status}")
+        print(f"{Colors.YELLOW}{idx}.{Colors.RESET} {route_name} | "
+              f"Start: ({route['start_lat']},{route['start_lng']}) | "
+              f"End: ({route['end_lat']},{route['end_lng']}) | "
+              f"Last state: {route['last_state']} | Map: {map_status}")
 
     input(f"\n{Colors.CYAN}Press Enter to return to menu...{Colors.RESET}")
 
