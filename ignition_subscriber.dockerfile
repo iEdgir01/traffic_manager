@@ -31,10 +31,10 @@ RUN mkdir -p /app/data/maps
 # --------------------
 # Create CLI aliases
 # --------------------
-RUN echo '#!/bin/bash\npython3 /app/route_manager.py' > /usr/local/bin/menu \
+RUN echo '#!/bin/sh\npython3 /app/route_manager.py' > /usr/local/bin/menu \
     && chmod +x /usr/local/bin/menu
 
-RUN echo '#!/bin/bash\npython3 /app/test_ignition.py' > /usr/local/bin/test \
+RUN echo '#!/bin/sh\npython3 /app/test_ignition.py' > /usr/local/bin/test \
     && chmod +x /usr/local/bin/test
 
 # --------------------
