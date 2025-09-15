@@ -1231,9 +1231,9 @@ class SelectRouteView(View):
 
 class SelectRoute(Select):
     def __init__(self, original_message: discord.Message, routes):
-        options = [SelectOption(label=r[1]) for r in routes]
+        options = [SelectOption(label=r["name"]) for r in routes]
         super().__init__(placeholder="Select a route...", min_values=1, max_values=1, options=options)
-        self.routes = {r[1]: r for r in routes}
+        self.routes = {r["name"]: r for r in routes}
         self.original_message = original_message
 
     async def callback(self, interaction: discord.Interaction):
