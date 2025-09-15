@@ -13,7 +13,6 @@ from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 
 import aiohttp
-import paho.mqtt.client as mqtt
 from traffic_utils import (
     with_db, summarize_segments, get_routes,
     calculate_baseline, check_route_traffic, update_route_time
@@ -33,31 +32,44 @@ WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 if not WEBHOOK_URL:
     raise ValueError("Missing environment variable: DISCORD_WEBHOOK_URL")
 
-# MQTT configuration for Android TTS
-MQTT_TTS_BROKER = os.environ.get("MQTT_TTS_BROKER", "mqtt.fixetics.co.za")
-MQTT_TTS_PORT = int(os.environ.get("MQTT_TTS_PORT", "1883"))
-MQTT_TTS_TOPIC = os.environ.get("MQTT_TTS_TOPIC", "traffic.alert")
+# Gotify configuration for Android notifications
+GOTIFY_URL = os.environ.get("GOTIFY_URL")
+GOTIFY_TOKEN = os.environ.get("GOTIFY_TOKEN")
+GOTIFY_PRIORITY = int(os.environ.get("GOTIFY_PRIORITY", "5")) if os.environ.get("GOTIFY_PRIORITY") else 5
 
 logger.info("Discord Notify module loaded")
 
 
 # ---------------------
-# MQTT helper for Android TTS
+# Gotify helper for Android notifications
 # ---------------------
-async def send_mqtt_alert(message: str):
-    """Send traffic alert message to MQTT broker for Android TTS"""
-    def publish_message():
-        client = mqtt.Client()
-        try:
-            client.connect(MQTT_TTS_BROKER, MQTT_TTS_PORT, 60)
-            result = client.publish(MQTT_TTS_TOPIC, message, qos=1)
-            if result.rc != mqtt.MQTT_ERR_SUCCESS:
-                raise Exception(f"MQTT publish failed with code {result.rc}")
-            client.disconnect()
-        except Exception as e:
-            raise Exception(f"MQTT connection/publish failed: {e}")
+async def send_gotify_notification(title: str, message: str):
+    """Send traffic alert notification to Gotify server"""
+    if not GOTIFY_URL or not GOTIFY_TOKEN:
+        logger.warning("GOTIFY_URL or GOTIFY_TOKEN not configured, skipping Gotify notification")
+        return
 
-    await asyncio.to_thread(publish_message)
+    try:
+        payload = {
+            "title": title,
+            "message": message,
+            "priority": GOTIFY_PRIORITY
+        }
+
+        headers = {
+            "Content-Type": "application/json"
+        }
+
+        url = f"{GOTIFY_URL}/message?token={GOTIFY_TOKEN}"
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, headers=headers, timeout=10) as resp:
+                if resp.status not in (200, 201):
+                    text = await resp.text()
+                    raise Exception(f"Gotify API returned {resp.status}: {text}")
+
+    except Exception as e:
+        raise Exception(f"Gotify notification failed: {e}")
 
 # ---------------------
 # DB helpers wrapped for async
@@ -165,12 +177,12 @@ async def post_traffic_alerts_async():
                             ]
                         }
 
-                        # Send summary to MQTT for Android TTS
+                        # Send notification to Gotify for Android
                         try:
-                            await send_mqtt_alert(sentence)
-                            logger.info(f"MQTT alert sent for {name}")
-                        except Exception as mqtt_error:
-                            logger.error(f"Failed to send MQTT alert for {name}: {mqtt_error}")
+                            await send_gotify_notification(f"Traffic Alert - {name}", sentence)
+                            logger.info(f"Gotify notification sent for {name}")
+                        except Exception as gotify_error:
+                            logger.error(f"Failed to send Gotify notification for {name}: {gotify_error}")
 
                         async with session.post(WEBHOOK_URL, json={"embeds": [embed]}, timeout=10) as resp:
                             if resp.status not in (200, 204):

@@ -1753,15 +1753,15 @@ class EditThresholdModal(Modal):
         self.threshold = threshold
         self.all_thresholds = all_thresholds
 
-        self.factor_total = TextInput(label="Route Time Multiplier", default=str(threshold["factor_total"]))
-        self.factor_step = TextInput(label="Segment Time Multiplier", default=str(threshold["factor_step"]))
         self.delay_total = TextInput(label="Route Delay Allowance", default=str(threshold["delay_total"]))
         self.delay_step = TextInput(label="Segment Delay Allowance", default=str(threshold["delay_step"]))
+        self.factor_total = TextInput(label="Route Time Multiplier", default=str(threshold["factor_total"]))
+        self.factor_step = TextInput(label="Segment Time Multiplier", default=str(threshold["factor_step"]))
 
-        self.add_item(self.factor_total)
-        self.add_item(self.factor_step)
         self.add_item(self.delay_total)
         self.add_item(self.delay_step)
+        self.add_item(self.factor_total)
+        self.add_item(self.factor_step)
 
     async def on_submit(self, interaction: discord.Interaction):
         if _shutting_down:
@@ -1770,10 +1770,10 @@ class EditThresholdModal(Modal):
         try:
             await show_loading_state(interaction, "Updating Threshold", "Saving changes...")
 
-            for key, field in [("factor_total", self.factor_total),
-                               ("factor_step", self.factor_step),
-                               ("delay_total", self.delay_total),
-                               ("delay_step", self.delay_step)]:
+            for key, field in [("delay_total", self.delay_total),
+                               ("delay_step", self.delay_step),
+                               ("factor_total", self.factor_total),
+                               ("factor_step", self.factor_step)]:
                 try:
                     self.threshold[key] = float(field.value)
                 except ValueError:

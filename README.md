@@ -20,7 +20,7 @@ Traffic Manager is a comprehensive traffic monitoring system that automatically 
 - **Visual Maps**: Automatic route map generation using Google Static Maps API
 - **Threshold Configuration**: Manage traffic detection sensitivity
 - **Real-time Notifications**: Traffic state change alerts via webhooks
-- **MQTT TTS Integration**: Summary messages sent to MQTT broker for Android text-to-speech
+- **Gotify Integration**: Push notifications sent to Gotify server for Android alerts
 
 ### 📡 MQTT Integration
 - **Ignition Monitoring**: Automatic traffic checks when vehicle starts
@@ -64,7 +64,7 @@ Traffic Manager is a comprehensive traffic monitoring system that automatically 
 3. **Analysis** → Traffic conditions compared against dynamic thresholds
 4. **Storage** → Results saved to PostgreSQL with historical data
 5. **Notification** → Discord webhook alerts for traffic state changes
-6. **MQTT TTS** → Summary messages published to MQTT broker for Android TTS
+6. **Gotify Push** → Push notifications sent to Gotify server for Android alerts
 7. **Visualization** → Route maps generated and cached
 
 ## Quick Start
@@ -105,10 +105,10 @@ MQTT_PORT=1883
 MQTT_TOPIC=your_topic
 IGNITION_TIMEOUT=300
 
-# MQTT TTS/Android Integration (Optional)
-MQTT_TTS_BROKER=your_mqtt_tts_broker
-MQTT_TTS_PORT=1883
-MQTT_TTS_TOPIC=your_tts_topic
+# Gotify Android Integration (Optional)
+GOTIFY_URL=https://your-gotify-server.com
+GOTIFY_TOKEN=your_gotify_app_token
+GOTIFY_PRIORITY=5
 ```
 
 ### Installation
@@ -181,21 +181,22 @@ The system can be triggered via MQTT messages for automated traffic checks:
 
 The system will trigger traffic alerts when it receives the first ignition ON message after a period of no messages. Continuous messages keep the ignition state alive, and after the configured timeout (default 300 seconds) without messages, the ignition is considered OFF.
 
-### Android TTS Integration
+### Android Gotify Integration
 
-Traffic alert summaries are automatically published to an MQTT broker for Android text-to-speech integration:
+Traffic alert summaries are automatically sent as push notifications to a Gotify server for Android integration:
 
-**MQTT Message Format:**
+**Gotify Notification Format:**
 ```
-Topic: {configured_topic}
-Payload: "Heavy traffic detected on Route Name, current delay is 15 minutes."
+Title: "Traffic Alert - Route Name"
+Message: "Heavy traffic detected on Route Name, current delay is 15 minutes."
+Priority: {configured_priority}
 ```
 
-**Summary Message Types:**
+**Notification Message Types:**
 - **Heavy Traffic**: `"Heavy traffic detected on {route}, current delay is {delay} minutes."`
 - **Traffic Cleared**: `"You can expect normal travel times on {route}."`
 
-Configure your Android MQTT client to subscribe to the configured topic and use text-to-speech to announce traffic alerts.
+Install the Gotify Android app and configure it to connect to your Gotify server to receive push notifications.
 
 ## Configuration
 
