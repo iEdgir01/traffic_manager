@@ -162,11 +162,17 @@ The system can be triggered via MQTT messages for automated traffic checks:
 
 ```json
 {
-  "ignition": "on",
-  "vehicle_id": "your_vehicle",
-  "timestamp": "2024-01-01T12:00:00Z"
+  "Ignition On": true,
+  "device_id": "350317178238931",
+  "message_time": "2025-09-15T14:51:43Z",
+  "location": {
+    "latitude": -29.89825,
+    "longitude": 30.9697166
+  }
 }
 ```
+
+The system will trigger traffic alerts when it receives the first ignition ON message after a period of no messages. Continuous messages keep the ignition state alive, and after the configured timeout (default 300 seconds) without messages, the ignition is considered OFF.
 
 ## Configuration
 
