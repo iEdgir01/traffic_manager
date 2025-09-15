@@ -93,8 +93,6 @@ def get_routes(conn=None):
 def update_route_time(route_id, normal_time, state, conn=None):
     with conn.cursor() as c:
         if route_id is None:
-            # This was used for new route insertion in the original code
-            # Handle this case separately
             return
             
         c.execute('SELECT historical_times FROM routes WHERE id=%s', (route_id,))
@@ -109,6 +107,19 @@ def update_route_time(route_id, normal_time, state, conn=None):
             'UPDATE routes SET last_normal_time=%s, last_state=%s, historical_times=%s WHERE id=%s',
             (normal_time, state, json.dumps(historical), route_id)
         )
+
+@with_db
+def add_route(name, start_lat, start_lng, end_lat, end_lng, conn=None):
+    with conn.cursor() as c:
+        c.execute("""
+            INSERT INTO routes (name, start_lat, start_lng, end_lat, end_lng, last_normal_time, last_state, historical_times)
+            VALUES (%s, %s, %s, %s, %s, NULL, 'Normal', '[]')
+        """, (name, start_lat, start_lng, end_lat, end_lng))
+
+@with_db
+def delete_route(name, conn=None):
+    with conn.cursor() as c:
+        c.execute("DELETE FROM routes WHERE name=%s", (name,))
 
 def calculate_baseline(historical_times):
     if not historical_times:
@@ -359,22 +370,6 @@ def get_route_map(route_name, start_lat, start_lng, end_lat, end_lng):
     with open(map_path, "wb") as f:
         f.write(r.content)
     return map_path
-
-# ---------------------
-# Additional functions needed by CLI
-# ---------------------
-@with_db
-def add_route(name, start_lat, start_lng, end_lat, end_lng, conn=None):
-    with conn.cursor() as c:
-        c.execute("""
-            INSERT INTO routes (name, start_lat, start_lng, end_lat, end_lng, last_normal_time, last_state, historical_times)
-            VALUES (%s, %s, %s, %s, %s, NULL, 'Normal', '[]')
-        """, (name, start_lat, start_lng, end_lat, end_lng))
-
-@with_db
-def delete_route(name, conn=None):
-    with conn.cursor() as c:
-        c.execute("DELETE FROM routes WHERE name=%s", (name,))
 
 # ---------------------
 # CLI

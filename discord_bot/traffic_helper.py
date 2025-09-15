@@ -9,9 +9,10 @@ import asyncio
 from datetime import datetime
 import logging
 import json
+import threading
+import contextlib
 from traffic_utils import (
     init_db,
-    with_db,
     get_route_map,
     get_routes,
     check_route_traffic,
@@ -20,7 +21,9 @@ from traffic_utils import (
     calculate_baseline,
     get_thresholds,
     set_thresholds,
-    reset_thresholds
+    reset_thresholds,
+    add_route,
+    delete_route
 )
 from PIL import Image, ImageDraw, ImageFont
 from io import BytesIO
@@ -43,6 +46,7 @@ MAP_DIR.mkdir(parents=True, exist_ok=True)
 # Thread pool for blocking operations - make it recreatable
 bot = None
 thread_pool = None
+_thread_pool_lock = threading.Lock()
 _shutting_down = False
 _force_permanent_shutdown = False
 
@@ -50,31 +54,49 @@ _force_permanent_shutdown = False
 # Thread pool management
 # =========================
 def create_thread_pool():
-    """Create or recreate the thread pool"""
+    """Create or recreate the thread pool with logging"""
     global thread_pool
     if thread_pool and not thread_pool._shutdown:
+        logging.debug("Thread pool already exists and is active")
         return thread_pool
+    
+    logging.info("Creating new thread pool with 4 workers")
     thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
     return thread_pool
 
 def ensure_thread_pool():
-    """Ensure thread pool exists and is not shut down"""
+    """Ensure thread pool exists and is not shut down with logging"""
     global thread_pool
-    if thread_pool is None or thread_pool._shutdown:
+    
+    if thread_pool is None:
+        logging.info("Thread pool is None, creating new one")
         thread_pool = create_thread_pool()
+    elif thread_pool._shutdown:
+        logging.warning("Thread pool was shut down, recreating")
+        thread_pool = create_thread_pool()
+    else:
+        logging.debug("Thread pool is healthy")
+    
     return thread_pool
 
 def shutdown_thread_pool(wait=False):
-    """Shutdown the thread pool if active"""
+    """Shutdown the thread pool if active with logging"""
     global thread_pool
     if thread_pool and not thread_pool._shutdown:
         try:
+            logging.info(f"Shutting down thread pool (wait={wait})")
             thread_pool.shutdown(wait=wait, cancel_futures=True)
+            logging.info("Thread pool shutdown complete")
         except TypeError:
-            # Python < 3.9 doesn’t support cancel_futures
+            # Python < 3.9 doesn't support cancel_futures
+            logging.info("Using legacy thread pool shutdown (no cancel_futures)")
             thread_pool.shutdown(wait=wait)
+        except Exception as e:
+            logging.error(f"Error during thread pool shutdown: {e}")
         finally:
             thread_pool = None
+    else:
+        logging.debug("Thread pool already shut down or None")
 
 # =========================
 # Bot management
@@ -111,6 +133,84 @@ class BotStyles:
     ERROR_COLOR = discord.Color.red()          # Errors
     INFO_COLOR = discord.Color.blurple()       # Info/neutral
     LOADING_COLOR = discord.Color.yellow()     # Loading states
+
+class ConnectionHealthMonitor:
+    def __init__(self):
+        self.last_heartbeat = None
+        self.connection_failures = 0
+        self.last_connection_attempt = None
+    
+    def record_heartbeat(self):
+        self.last_heartbeat = datetime.utcnow()
+        self.connection_failures = 0
+    
+    def record_failure(self):
+        self.connection_failures += 1
+        self.last_connection_attempt = datetime.utcnow()
+    
+    def is_healthy(self) -> bool:
+        if not self.last_heartbeat:
+            return False
+        
+        # Consider unhealthy if no heartbeat in 5 minutes
+        time_since_heartbeat = (datetime.utcnow() - self.last_heartbeat).total_seconds()
+        return time_since_heartbeat < 300
+    
+    def should_attempt_reconnection(self) -> bool:
+        if not self.last_connection_attempt:
+            return True
+        
+        # Wait longer between attempts based on failure count
+        wait_time = min(300, 30 * self.connection_failures)  # Max 5 minutes
+        time_since_attempt = (datetime.utcnow() - self.last_connection_attempt).total_seconds()
+        return time_since_attempt >= wait_time
+
+health_monitor = ConnectionHealthMonitor()
+
+class BotResourceManager:
+    """Async context manager for bot resources"""
+    
+    def __init__(self):
+        self.bot_instance = None
+        self.thread_pool_created = False
+    
+    async def __aenter__(self):
+        logging.info("Entering bot resource context")
+        # Ensure thread pool exists
+        ensure_thread_pool()
+        self.thread_pool_created = True
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        logging.info(f"Exiting bot resource context (exception: {exc_type.__name__ if exc_type else 'None'})")
+        
+        # Clean up bot
+        if self.bot_instance and not self.bot_instance.is_closed():
+            try:
+                await asyncio.wait_for(self.bot_instance.close(), timeout=10.0)
+                logging.info("Bot closed successfully in context manager")
+            except Exception as e:
+                logging.error(f"Error closing bot in context manager: {e}")
+        
+        # Clean up thread pool
+        if self.thread_pool_created:
+            shutdown_thread_pool(wait=False)
+        
+        logging.info("Bot resource cleanup complete")
+    
+    def set_bot(self, bot_instance):
+        self.bot_instance = bot_instance
+
+@contextlib.asynccontextmanager
+async def bot_session():
+    """Simple async context manager for bot sessions"""
+    resource_manager = BotResourceManager()
+    try:
+        async with resource_manager:
+            yield resource_manager
+    except Exception as e:
+        logging.error(f"Exception in bot session context: {e}")
+        raise
 
 # ---------------------
 # Async helpers for blocking operations
@@ -242,24 +342,6 @@ async def show_loading_state(interaction: discord.Interaction, title: str, descr
         # Interaction expired or bot is shutting down
         pass
 
-# ---------------------
-# DB functions
-# ---------------------
-@with_db
-def add_route(name, start_lat, start_lng, end_lat, end_lng, conn=None):
-    with conn.cursor() as c:
-        c.execute("""
-            INSERT INTO routes (name, start_lat, start_lng, end_lat, end_lng, last_normal_time, last_state, historical_times)
-            VALUES (%s, %s, %s, %s, NULL, 'Normal', '[]')
-        """, (name, start_lat, start_lng, end_lat, end_lng))
-    conn.commit()
-
-@with_db
-def delete_route(name, conn=None):
-    with conn.cursor() as c:
-        c.execute("DELETE FROM routes WHERE name=%s", (name,))
-    conn.commit()
-
 # --------------------
 # DMS parsing helpers (keeping existing)
 # --------------------
@@ -306,10 +388,9 @@ def haversine_distance(lat1, lon1, lat2, lon2):
 # Blocking processing
 # --------------------
 def register_route_and_generate_map(name, start_lat, start_lng, end_lat, end_lng):
-    init_db()
     try:
         add_route(name, start_lat, start_lng, end_lat, end_lng)
-    except ValueError as e:
+    except Exception as e:
         raise e
 
     # Generate map
@@ -548,7 +629,7 @@ class BackToMenuButton(Button):
 # --------------------
 class BackToMenuView(View):
     def __init__(self):
-        super().__init__(timeout=None)
+        super().__init__(timeout=300)
         self.add_item(BackToMenuButton())
 
 # --------------------
@@ -556,7 +637,7 @@ class BackToMenuView(View):
 # --------------------
 class RoutesPagination(View):
     def __init__(self, routes_data):
-        super().__init__(timeout=None)
+        super().__init__(timeout=300)
         self.routes = routes_data
         self.index = 0
         self.message: discord.Message | None = None
@@ -723,7 +804,7 @@ class ListRoutesButton(Button):
 # --------------------
 class ConfirmDeleteView(View):
     def __init__(self, route_name: str, route_data: dict, all_routes: list):
-        super().__init__(timeout=None)
+        super().__init__(timeout=300)
         self.route_name = route_name
         self.route_data = route_data
         self.all_routes = all_routes
@@ -844,7 +925,7 @@ class RemoveRouteSelect(Select):
 
 class RemoveRouteView(View):
     def __init__(self, routes):
-        super().__init__(timeout=None)
+        super().__init__(timeout=300)
         self.routes = {r['name']: r for r in routes}
         self.add_item(RemoveRouteSelect(routes))
         self.add_item(BackToMenuButton())
@@ -929,7 +1010,7 @@ class TrafficStatusMainButton(Button):
 # --------------------
 class TrafficStatusView(View):
     def __init__(self, original_message: discord.Message):
-        super().__init__(timeout=None)
+        super().__init__(timeout=300)
         self.original_message = original_message
         self.add_item(CheckSingleRouteButton(original_message))
         self.add_item(CheckAllRoutesButton(original_message))
@@ -1023,9 +1104,10 @@ class CheckAllRoutesButton(Button):
                         "route": route,
                         "traffic": traffic_result
                     })
+                    # Update database with traffic results
                     route_id = route[0]
                     if "error" not in traffic_result:
-                        update_route_time(route_id, traffic_result["total_normal"], traffic_result["state"])
+                        await run_in_thread(update_route_time, route_id, traffic_result["total_normal"], traffic_result["state"])
                 except RuntimeError as e:
                     if "shutdown" in str(e).lower():
                         return
@@ -1064,7 +1146,7 @@ class CheckAllRoutesButton(Button):
 # ---------------------
 class SelectRouteView(View):
     def __init__(self, original_message: discord.Message, routes):
-        super().__init__(timeout=None)
+        super().__init__(timeout=300)
         self.original_message = original_message
         self.add_item(SelectRoute(original_message, routes))
         self.add_item(BackToTrafficStatusButton(original_message))
@@ -1097,7 +1179,7 @@ class SelectRoute(Select):
                 color = BotStyles.ERROR_COLOR
                 state_text = "Error"
             else:
-                update_route_time(route_id, traffic["total_normal"], traffic["state"])
+                await run_in_thread(update_route_time, route_id, traffic["total_normal"], traffic["state"])
                 color = BotStyles.SUCCESS_COLOR if traffic['state'] == 'Normal' else BotStyles.ERROR_COLOR
                 state_text = "Normal" if traffic['state'] == 'Normal' else "Heavy"
 
@@ -1393,7 +1475,7 @@ class BackToTrafficStatusButton(Button):
 
 class BackToTrafficStatusView(View):
     def __init__(self, original_message: discord.Message):
-        super().__init__(timeout=None)
+        super().__init__(timeout=300)
         self.add_item(BackToTrafficStatusButton(original_message))
 
 # --------------------
@@ -1449,7 +1531,7 @@ class ThresholdsButton(Button):
 # --------------------
 class ThresholdsView(View):
     def __init__(self, thresholds):
-        super().__init__(timeout=None)
+        super().__init__(timeout=300)
         self.thresholds = thresholds
 
         if thresholds:
@@ -1721,7 +1803,7 @@ def get_main_menu_view():
 
 class MainMenu(View):
     def __init__(self):
-        super().__init__(timeout=None)
+        super().__init__(timeout=300)
         self.add_item(AddRouteButton())
         self.add_item(ListRoutesButton())
         self.add_item(RemoveRouteButton())
@@ -1734,103 +1816,117 @@ class MainMenu(View):
 def attach_bot_events(bot):
     @bot.event
     async def on_ready():
-        print(f"Bot is online as {bot.user}")
-        # Ensure we have a fresh thread pool on startup
+        logging.info(f"Bot is online as {bot.user}")
+        health_monitor.record_heartbeat()  # Record successful connection
+        
+        # Initialize database and ensure we have a fresh thread pool on startup
+        try:
+            await run_in_thread(init_db)
+            logging.info("Database initialized successfully")
+        except Exception as e:
+            logging.error(f"Failed to initialize database: {e}")
         create_thread_pool()
+
+    @bot.event
+    async def on_connect():
+        logging.info("Bot connected to Discord")
+        health_monitor.record_heartbeat()
+
+    @bot.event  
+    async def on_resumed():
+        logging.info("Bot session resumed")
+        health_monitor.record_heartbeat()
+
+    # Add periodic heartbeat
+    @bot.event
+    async def on_message(message):
+        # Update heartbeat on message activity (light health check)
+        health_monitor.record_heartbeat()
 
     @bot.command()
     async def menu(ctx):
+        health_monitor.record_heartbeat()
         await ctx.send("Traffic Manager Menu", view=get_main_menu_view())
 
-    # Handle errors gracefully without shutting down
     @bot.event
     async def on_error(event, *args, **kwargs):
         logging.error(f"Bot error in {event}: {args}")
-        # Don't call cleanup here - just log the error
 
     @bot.event
     async def on_command_error(ctx, error):
         logging.error(f"Command error: {error}")
-        # Don't call cleanup here either
 
-    # Only cleanup on actual disconnect
     @bot.event
     async def on_disconnect():
+        logging.warning("Bot disconnected")
         await soft_cleanup()
 
 # =========================
 # Bot runner with restart
 # =========================
 async def run_discord_bot():
-    """Enhanced bot runner with better error handling"""
-    global bot, _shutting_down, _force_permanent_shutdown
+    """Enhanced bot runner with health checks and exponential backoff"""
+    global bot, _shutting_down, _force_permanent_shutdown, health_monitor
 
-    max_restarts = 5
+    logging.info("Discord bot runner starting...")  # ADD THIS
+    
+    max_restarts = 8
     restart_count = 0
-    connection_timeout_count = 0  # Track connection timeouts specifically
+    base_delay = 5
 
-    # Reset flags for this session (unless permanent shutdown)
     if not _force_permanent_shutdown:
         _shutting_down = False
 
     while restart_count < max_restarts and not _shutting_down and not _force_permanent_shutdown:
         try:
-            # Clean up any previous instance
-            if bot and not bot.is_closed():
-                try:
-                    await asyncio.wait_for(bot.close(), timeout=5.0)
-                except (asyncio.TimeoutError, Exception) as e:
-                    logging.warning(f"Error closing previous bot: {e}")
-                    
-            bot = create_bot_instance()
-            attach_bot_events(bot)
+            if not health_monitor.should_attempt_reconnection():
+                await asyncio.sleep(1)
+                continue
 
-            # Ensure thread pool exists
-            ensure_thread_pool()
-            
-            logging.info(f"Starting Discord bot (attempt {restart_count + 1}/{max_restarts})")
-            
-            # Use timeout for the connection attempt
-            await asyncio.wait_for(bot.start(TOKEN), timeout=120.0)  # 2 minute timeout
-            
-            # If we get here, bot disconnected normally
-            logging.info("Bot disconnected normally")
-            break
+            async with bot_session() as session:
+                bot = create_bot_instance()
+                session.set_bot(bot)
+                attach_bot_events(bot)
+                
+                logging.info(f"Starting Discord bot (attempt {restart_count + 1}/{max_restarts})")
+                health_monitor.record_failure()
+                
+                await asyncio.wait_for(bot.start(TOKEN), timeout=120.0)
+                logging.info("Bot disconnected normally")
+                break
 
         except asyncio.TimeoutError:
-            connection_timeout_count += 1
             restart_count += 1
             logging.error(f"Bot connection timed out (attempt {restart_count})")
             
-            # For connection timeouts, wait longer between retries
-            if restart_count < max_restarts and not _shutting_down:
-                wait_time = min(60, 10 * connection_timeout_count)  # Progressive backoff
-                logging.info(f"Waiting {wait_time}s before retry due to connection timeout...")
+            delay = min(300, base_delay * (2 ** restart_count))
+            jitter = delay * 0.1 * (0.5 - asyncio.get_event_loop().time() % 1)
+            wait_time = delay + jitter
+            
+            logging.info(f"Exponential backoff: waiting {wait_time:.1f}s before retry...")
+            if not _shutting_down:
                 await asyncio.sleep(wait_time)
-                await cleanup_for_restart()
 
         except asyncio.CancelledError:
             logging.warning("Bot start was cancelled")
-            break  # Don't retry on cancellation
+            break
                 
         except Exception as e:
             restart_count += 1
             error_msg = str(e)
             
-            # Check if this is a network-related error
+            delay = min(300, base_delay * (2 ** restart_count))
+            
             if any(keyword in error_msg.lower() for keyword in ['resolve', 'connection', 'timeout', 'network']):
                 logging.error(f"Network error (attempt {restart_count}): {e}")
-                if restart_count < max_restarts and not _shutting_down:
-                    wait_time = min(120, 30 * restart_count)  # Longer wait for network issues
-                    logging.info(f"Waiting {wait_time}s before retry due to network error...")
-                    await asyncio.sleep(wait_time)
+                delay *= 2
             else:
                 logging.error(f"Bot crashed (attempt {restart_count}): {e}")
-                if restart_count < max_restarts and not _shutting_down:
-                    await asyncio.sleep(10)
+            
+            delay = min(600, delay)
+            logging.info(f"Exponential backoff: waiting {delay}s before retry...")
             
             if restart_count < max_restarts and not _shutting_down:
-                await cleanup_for_restart()
+                await asyncio.sleep(delay)
 
-    # Final cleanup
     await soft_cleanup()

@@ -1,3 +1,4 @@
+import os
 import threading
 import asyncio
 import logging
@@ -9,11 +10,20 @@ from ignition_subscriber.subscriber import IgnitionMonitor
 from discord_bot.traffic_helper import run_discord_bot, force_permanent_shutdown
 
 # Configure logging
+# Configure logging with more explicit settings
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout),  # Ensure output goes to stdout
+        logging.FileHandler("app.log") if not os.getenv("DOCKER_CONTAINER") else logging.StreamHandler()
+    ]
 )
 logger = logging.getLogger(__name__)
+
+# Add immediate output
+print("Application starting...")
+logger.info("Application starting with logging configured")
 
 # Global flags
 _force_shutdown = False  # Only True when we REALLY want to stop
@@ -25,6 +35,8 @@ def start_ignition_monitor():
     """Start MQTT ignition monitor with restart capability"""
     max_restarts = 10
     restart_count = 0
+    
+    logger.info("Ignition monitor thread started")  # ADD THIS
     
     while restart_count < max_restarts and not _force_shutdown:
         try:
@@ -102,24 +114,17 @@ async def run_discord_bot_infinite():
 # Signal handlers
 # ----------------------------
 def signal_handler(signum, frame):
-    """Handle shutdown signals with immediate response"""
     global _force_shutdown
-    
     logger.info(f"Received signal {signum}")
+    _force_shutdown = True
+    force_permanent_shutdown()
     
     if signum == signal.SIGTERM:
-        # Docker stop or system shutdown - force shutdown immediately
-        _force_shutdown = True
-        force_permanent_shutdown()
         logger.info("SIGTERM received - forcing permanent shutdown")
-        sys.exit(0)
-        
     elif signum == signal.SIGINT:
-        # Ctrl+C - force shutdown immediately (no restart logic needed)
-        _force_shutdown = True
-        force_permanent_shutdown()
         logger.info("SIGINT received - forcing permanent shutdown")
-        sys.exit(0)
+    
+    # Let the main loop handle the exit instead of forcing it here
 
 def cleanup_on_exit():
     """Cleanup function for atexit"""
@@ -191,7 +196,7 @@ def main():
         # Wait for ignition thread to finish if it's still alive
         if ignition_thread and ignition_thread.is_alive():
             logger.info("Waiting for ignition monitor to finish...")
-            ignition_thread.join(timeout=5)
+            ignition_thread.join(timeout=10)
             if ignition_thread.is_alive():
                 logger.warning("Ignition monitor did not shut down gracefully")
         
