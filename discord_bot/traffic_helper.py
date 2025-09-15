@@ -1240,8 +1240,7 @@ class SelectRoute(Select):
                 state_text = "Normal" if traffic['state'] == 'Normal' else "Heavy"
 
             embed = Embed(
-                title="Traffic Status",
-                description=f"**Route:** {name}",
+                title=f"Traffic Alert - {name}",
                 color=color,
                 timestamp=datetime.now(timezone.utc)
             )
@@ -1342,8 +1341,7 @@ class TrafficPaginationView(View):
                 state_text = "Normal" if traffic['state'] == 'Normal' else "Heavy"
 
             embed = Embed(
-                title="Traffic Status",
-                description=f"**Route:** {name}",
+                title=f"Traffic Alert - {name}",
                 color=color,
                 timestamp=datetime.now(timezone.utc)
             )

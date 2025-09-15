@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 
 import aiohttp
+import paho.mqtt.client as mqtt
 from traffic_utils import (
     with_db, summarize_segments, get_routes,
     calculate_baseline, check_route_traffic, update_route_time
@@ -32,8 +33,31 @@ WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 if not WEBHOOK_URL:
     raise ValueError("Missing environment variable: DISCORD_WEBHOOK_URL")
 
+# MQTT configuration for Android TTS
+MQTT_TTS_BROKER = os.environ.get("MQTT_TTS_BROKER", "mqtt.fixetics.co.za")
+MQTT_TTS_PORT = int(os.environ.get("MQTT_TTS_PORT", "1883"))
+MQTT_TTS_TOPIC = os.environ.get("MQTT_TTS_TOPIC", "traffic.alert")
+
 logger.info("Discord Notify module loaded")
 
+
+# ---------------------
+# MQTT helper for Android TTS
+# ---------------------
+async def send_mqtt_alert(message: str):
+    """Send traffic alert message to MQTT broker for Android TTS"""
+    def publish_message():
+        client = mqtt.Client()
+        try:
+            client.connect(MQTT_TTS_BROKER, MQTT_TTS_PORT, 60)
+            result = client.publish(MQTT_TTS_TOPIC, message, qos=1)
+            if result.rc != mqtt.MQTT_ERR_SUCCESS:
+                raise Exception(f"MQTT publish failed with code {result.rc}")
+            client.disconnect()
+        except Exception as e:
+            raise Exception(f"MQTT connection/publish failed: {e}")
+
+    await asyncio.to_thread(publish_message)
 
 # ---------------------
 # DB helpers wrapped for async
@@ -127,8 +151,7 @@ async def post_traffic_alerts_async():
                             sentence = f"Traffic status update for {name}."
 
                         embed = {
-                            "title": "Traffic Status",
-                            "description": f"**Route:** {name}",
+                            "title": f"Traffic Alert - {name}",
                             "color": color,
                             "timestamp": datetime.now(timezone.utc).isoformat(),
                             "fields": [
@@ -141,6 +164,13 @@ async def post_traffic_alerts_async():
                                 {"name": "Summary", "value": sentence, "inline": False}
                             ]
                         }
+
+                        # Send summary to MQTT for Android TTS
+                        try:
+                            await send_mqtt_alert(sentence)
+                            logger.info(f"MQTT alert sent for {name}")
+                        except Exception as mqtt_error:
+                            logger.error(f"Failed to send MQTT alert for {name}: {mqtt_error}")
 
                         async with session.post(WEBHOOK_URL, json={"embeds": [embed]}, timeout=10) as resp:
                             if resp.status not in (200, 204):

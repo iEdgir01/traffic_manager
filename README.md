@@ -20,6 +20,7 @@ Traffic Manager is a comprehensive traffic monitoring system that automatically 
 - **Visual Maps**: Automatic route map generation using Google Static Maps API
 - **Threshold Configuration**: Manage traffic detection sensitivity
 - **Real-time Notifications**: Traffic state change alerts via webhooks
+- **MQTT TTS Integration**: Summary messages sent to MQTT broker for Android text-to-speech
 
 ### 📡 MQTT Integration
 - **Ignition Monitoring**: Automatic traffic checks when vehicle starts
@@ -63,7 +64,8 @@ Traffic Manager is a comprehensive traffic monitoring system that automatically 
 3. **Analysis** → Traffic conditions compared against dynamic thresholds
 4. **Storage** → Results saved to PostgreSQL with historical data
 5. **Notification** → Discord webhook alerts for traffic state changes
-6. **Visualization** → Route maps generated and cached
+6. **MQTT TTS** → Summary messages published to MQTT broker for Android TTS
+7. **Visualization** → Route maps generated and cached
 
 ## Quick Start
 
@@ -102,6 +104,11 @@ MQTT_BROKER=your_mqtt_broker
 MQTT_PORT=1883
 MQTT_TOPIC=your_topic
 IGNITION_TIMEOUT=300
+
+# MQTT TTS/Android Integration (Optional)
+MQTT_TTS_BROKER=your_mqtt_tts_broker
+MQTT_TTS_PORT=1883
+MQTT_TTS_TOPIC=your_tts_topic
 ```
 
 ### Installation
@@ -163,16 +170,32 @@ The system can be triggered via MQTT messages for automated traffic checks:
 ```json
 {
   "Ignition On": true,
-  "device_id": "350317178238931",
-  "message_time": "2025-09-15T14:51:43Z",
+  "device_id": "your_device_id",
+  "message_time": "2025-01-01T12:00:00Z",
   "location": {
-    "latitude": -29.89825,
-    "longitude": 30.9697166
+    "latitude": -25.123456,
+    "longitude": 28.123456
   }
 }
 ```
 
 The system will trigger traffic alerts when it receives the first ignition ON message after a period of no messages. Continuous messages keep the ignition state alive, and after the configured timeout (default 300 seconds) without messages, the ignition is considered OFF.
+
+### Android TTS Integration
+
+Traffic alert summaries are automatically published to an MQTT broker for Android text-to-speech integration:
+
+**MQTT Message Format:**
+```
+Topic: {configured_topic}
+Payload: "Heavy traffic detected on Route Name, current delay is 15 minutes."
+```
+
+**Summary Message Types:**
+- **Heavy Traffic**: `"Heavy traffic detected on {route}, current delay is {delay} minutes."`
+- **Traffic Cleared**: `"You can expect normal travel times on {route}."`
+
+Configure your Android MQTT client to subscribe to the configured topic and use text-to-speech to announce traffic alerts.
 
 ## Configuration
 
@@ -196,8 +219,8 @@ Configure traffic detection sensitivity based on route distance:
 Routes support DMS (Degrees Minutes Seconds) coordinate input:
 
 ```
-Start: 33°55'12"S 18°25'36"E
-End: 33°56'00"S 18°22'00"E
+Start: 25°30'00"S 28°15'00"E
+End: 25°35'00"S 28°20'00"E
 ```
 
 ## Development
