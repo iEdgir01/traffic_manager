@@ -109,7 +109,14 @@ def update_route_time(route_id, normal_time, state, conn=None):
         )
 
 @with_db
+@with_db
 def add_route(name, start_lat, start_lng, end_lat, end_lng, conn=None):
+    # Ensure the coordinates are floats
+    start_lat = float(start_lat)
+    start_lng = float(start_lng)
+    end_lat = float(end_lat)
+    end_lng = float(end_lng)
+
     with conn.cursor() as c:
         c.execute("""
             INSERT INTO routes (name, start_lat, start_lng, end_lat, end_lng, last_normal_time, last_state, historical_times)
