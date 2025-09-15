@@ -7,7 +7,7 @@ import math
 import sqlite3
 import re
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 import logging
 import json
@@ -103,7 +103,7 @@ def create_loading_embed(title: str, description: str = "Please wait...") -> dis
         title=f"⏳ {title}",
         description=description,
         color=BotStyles.LOADING_COLOR,
-        timestamp=datetime.utcnow()
+        timestamp=datetime.now(timezone.utc)
     )
     return embed
 
@@ -291,7 +291,7 @@ class AddRouteModal(discord.ui.Modal):
         embed = discord.Embed(
             title=f"Route Added - {route_name}",
             color=BotStyles.SUCCESS_COLOR,
-            timestamp=datetime.utcnow()
+            timestamp=datetime.now(timezone.utc)
         )
         embed.add_field(name="Distance", value=f"{distance_km:.2f} km", inline=True)
         embed.add_field(name="Start", value=f"{start_lat:.6f}, {start_lng:.6f}", inline=False)
@@ -367,7 +367,7 @@ class RoutesPagination(View):
         embed = discord.Embed(
             title=f"Route: {route['name']}",
             color=BotStyles.PRIMARY_COLOR,
-            timestamp=datetime.utcnow()
+            timestamp=datetime.now(timezone.utc)
         )
         embed.add_field(name="Distance", value=f"{distance_km:.2f} km", inline=True)
         embed.add_field(name="Start", value=f"{start_lat:.6f}, {start_lng:.6f}", inline=False)
@@ -516,7 +516,7 @@ class YesButton(Button):
             embed = discord.Embed(
                 title=f"Route Removed - {self.route_name}",
                 color=BotStyles.SUCCESS_COLOR,
-                timestamp=datetime.utcnow()
+                timestamp=datetime.now(timezone.utc)
             )
             embed.add_field(name="Start", value=f"{self.route_data['start_lat']:.6f}, {self.route_data['start_lng']:.6f}", inline=False)
             embed.add_field(name="End", value=f"{self.route_data['end_lat']:.6f}, {self.route_data['end_lng']:.6f}", inline=False)
@@ -578,7 +578,7 @@ class RemoveRouteSelect(Select):
             title=f"Confirm Deletion - {selected_name}",
             description="Are you sure you want to delete this route?",
             color=BotStyles.WARNING_COLOR,
-            timestamp=datetime.utcnow()
+            timestamp=datetime.now(timezone.utc)
         )
         embed.add_field(name="Start", value=f"{route['start_lat']:.6f}, {route['start_lng']:.6f}", inline=False)
         embed.add_field(name="End", value=f"{route['end_lat']:.6f}, {route['end_lng']:.6f}", inline=False)
@@ -814,7 +814,7 @@ class SelectRoute(Select):
             embed = Embed(
                 title=f"Traffic Status - {name}",
                 color=color,
-                timestamp=datetime.utcnow()
+                timestamp=datetime.now(timezone.utc)
             )
 
             if "error" in traffic:
@@ -895,7 +895,7 @@ class TrafficPaginationView(View):
         embed = Embed(
             title=f"Traffic Status - {name}",
             color=color,
-            timestamp=datetime.utcnow()
+            timestamp=datetime.now(timezone.utc)
         )
 
         if "error" in traffic:
@@ -1169,7 +1169,7 @@ class SensitivityHelpButton(Button):
                 "    Increase delay allowances"
             ),
             color=BotStyles.INFO_COLOR,
-            timestamp=datetime.utcnow()
+            timestamp=datetime.now(timezone.utc)
         )
 
         await interaction.response.send_message(embed=embed, ephemeral=True)

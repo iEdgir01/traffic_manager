@@ -3,7 +3,7 @@ import sys
 import sqlite3
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from traffic_utils import (
     init_db,
     get_routes,

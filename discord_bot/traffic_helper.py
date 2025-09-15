@@ -12,7 +12,7 @@ import contextlib
 from io import BytesIO
 from pathlib import Path
 import concurrent.futures
-from datetime import datetime
+from datetime import datetime, timezone, timezone
 from PIL import Image, ImageDraw, ImageFont
 import discord
 from discord.ext import commands
@@ -162,19 +162,19 @@ class ConnectionHealthMonitor:
         self.last_connection_attempt = None
     
     def record_heartbeat(self):
-        self.last_heartbeat = datetime.utcnow()
+        self.last_heartbeat = datetime.now(timezone.utc)
         self.connection_failures = 0
     
     def record_failure(self):
         self.connection_failures += 1
-        self.last_connection_attempt = datetime.utcnow()
+        self.last_connection_attempt = datetime.now(timezone.utc)
     
     def is_healthy(self) -> bool:
         if not self.last_heartbeat:
             return False
         
         # Consider unhealthy if no heartbeat in 5 minutes
-        time_since_heartbeat = (datetime.utcnow() - self.last_heartbeat).total_seconds()
+        time_since_heartbeat = (datetime.now(timezone.utc) - self.last_heartbeat).total_seconds()
         return time_since_heartbeat < 300
     
     def should_attempt_reconnection(self) -> bool:
@@ -183,7 +183,7 @@ class ConnectionHealthMonitor:
         
         # Wait longer between attempts based on failure count
         wait_time = min(300, 30 * self.connection_failures)  # Max 5 minutes
-        time_since_attempt = (datetime.utcnow() - self.last_connection_attempt).total_seconds()
+        time_since_attempt = (datetime.now(timezone.utc) - self.last_connection_attempt).total_seconds()
         return time_since_attempt >= wait_time
 
 health_monitor = ConnectionHealthMonitor()
@@ -344,7 +344,7 @@ def create_loading_embed(title: str, description: str = "Please wait...") -> dis
         title=f"⏳ {title}",
         description=description,
         color=BotStyles.LOADING_COLOR,
-        timestamp=datetime.utcnow()
+        timestamp=datetime.now(timezone.utc)
     )
     return embed
 
@@ -563,7 +563,7 @@ class AddRouteModal(discord.ui.Modal):
             embed = discord.Embed(
                 title=f"Route Added - {route_name}",
                 color=BotStyles.SUCCESS_COLOR,
-                timestamp=datetime.utcnow()
+                timestamp=datetime.now(timezone.utc)
             )
             embed.add_field(name="Distance", value=f"{distance_km:.2f} km", inline=True)
             embed.add_field(name="Start", value=f"{start_lat:.6f}, {start_lng:.6f}", inline=False)
@@ -677,7 +677,7 @@ class RoutesPagination(View):
             embed = discord.Embed(
                 title=f"Route: {route['name']}",
                 color=BotStyles.PRIMARY_COLOR,
-                timestamp=datetime.utcnow()
+                timestamp=datetime.now(timezone.utc)
             )
             embed.add_field(name="Distance", value=f"{distance_km:.2f} km", inline=True)
             embed.add_field(name="Start", value=f"{start_lat:.6f}, {start_lng:.6f}", inline=False)
@@ -855,7 +855,7 @@ class YesButton(Button):
             embed = discord.Embed(
                 title=f"Route Removed - {self.route_name}",
                 color=BotStyles.SUCCESS_COLOR,
-                timestamp=datetime.utcnow()
+                timestamp=datetime.now(timezone.utc)
             )
             embed.add_field(name="Start", value=f"{self.route_data['start_lat']:.6f}, {self.route_data['start_lng']:.6f}", inline=False)
             embed.add_field(name="End", value=f"{self.route_data['end_lat']:.6f}, {self.route_data['end_lng']:.6f}", inline=False)
@@ -930,7 +930,7 @@ class RemoveRouteSelect(Select):
                 title=f"Confirm Deletion - {selected_name}",
                 description="Are you sure you want to delete this route?",
                 color=BotStyles.WARNING_COLOR,
-                timestamp=datetime.utcnow()
+                timestamp=datetime.now(timezone.utc)
             )
             embed.add_field(name="Start", value=f"{route['start_lat']:.6f}, {route['start_lng']:.6f}", inline=False)
             embed.add_field(name="End", value=f"{route['end_lat']:.6f}, {route['end_lng']:.6f}", inline=False)
@@ -1207,7 +1207,7 @@ class SelectRoute(Select):
             embed = Embed(
                 title=f"Traffic Status - {name}",
                 color=color,
-                timestamp=datetime.utcnow()
+                timestamp=datetime.now(timezone.utc)
             )
 
             if "error" in traffic:
@@ -1300,7 +1300,7 @@ class TrafficPaginationView(View):
             embed = Embed(
                 title=f"Traffic Status - {name}",
                 color=color,
-                timestamp=datetime.utcnow()
+                timestamp=datetime.now(timezone.utc)
             )
 
             if "error" in traffic:
@@ -1342,7 +1342,7 @@ class TrafficPaginationView(View):
                 title="Error Loading Page",
                 description=f"Failed to load traffic data: {str(e)}",
                 color=BotStyles.ERROR_COLOR,
-                timestamp=datetime.utcnow()
+                timestamp=datetime.now(timezone.utc)
             )
             error_embed.set_footer(text=f"Page {self.current_page+1} of {self.total_pages}")
             return error_embed, []
@@ -1678,7 +1678,7 @@ class SensitivityHelpButton(Button):
                 "    Increase delay allowances"
             ),
             color=BotStyles.INFO_COLOR,
-            timestamp=datetime.utcnow()
+            timestamp=datetime.now(timezone.utc)
         )
 
         try:

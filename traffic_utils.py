@@ -3,7 +3,7 @@ import json
 import psycopg2
 import psycopg2.extras
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 import requests
 import html
 import re
@@ -16,11 +16,11 @@ DATA_DIR = Path(os.getenv("DATA_DIR"))
 MAPS_DIR = Path(os.getenv("MAPS_DIR"))
 
 # PostgreSQL connection parameters
-DB_HOST = os.getenv("DB_HOST", "localhost")
-DB_PORT = os.getenv("DB_PORT", "5432")
-DB_NAME = os.getenv("DB_NAME", "traffic_db")
-DB_USER = os.getenv("DB_USER", "postgres")
-DB_PASSWORD = os.getenv("DB_PASSWORD")
+POSTGRES_HOST = os.getenv("POSTGRES_HOST")
+POSTGRES_PORT = os.getenv("POSTGRES_PORT") 
+POSTGRES_USER = os.getenv("POSTGRES_USER")
+POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD")
+POSTGRES_DB = os.getenv("POSTGRES_DB")
 
 # Ensure directories exist
 DATA_DIR.mkdir(parents=True, exist_ok=True)

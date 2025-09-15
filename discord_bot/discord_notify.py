@@ -1,12 +1,31 @@
 import os
 import json
 import asyncio
-from datetime import datetime
+import logging
+import sys
+from datetime import datetime, timezone, timezone
 import aiohttp
 from traffic_utils import (
     with_db, summarize_segments, get_routes,
     calculate_baseline, check_route_traffic, update_route_time
 )
+
+# Configure logging for standalone operation
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler("/app/data/discord_notify.log") if os.path.exists("/app/data") else logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
+if not WEBHOOK_URL:
+    raise ValueError("Missing environment variable: DISCORD_WEBHOOK_URL")
+
+logger.info("Discord Notify module loaded")
 
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 if not WEBHOOK_URL:
@@ -40,15 +59,15 @@ def update_last_state(route_id, state, conn=None):
 # ---------------------
 async def post_traffic_alerts_async():
     try:
-        print("TRAFFIC: Starting processing of all routes...")
+        logger.info("Starting processing of all routes...")
         routes = await run_in_thread(get_routes)
 
         if not routes:
-            print("TRAFFIC: No routes found in the database.")
+            logger.info("No routes found in the database.")
             return
 
         alerts_posted = 0
-        print(f"TRAFFIC: Total routes to process: {len(routes)}\n")
+        logger.info(f"Total routes to process: {len(routes)}")
 
         async with aiohttp.ClientSession() as session:
             for route in routes:
@@ -61,11 +80,11 @@ async def post_traffic_alerts_async():
                     end_lng = route["end_lng"]
                     historical_json = route.get("historical_times", "[]")
 
-                    print(f"TRAFFIC: Processing route '{name}'")
+                    logger.info(f"Processing route '{name}'")
 
                     historical_data = json.loads(historical_json) if historical_json else []
                     baseline = calculate_baseline(historical_data)
-                    print(f"TRAFFIC: Baseline calculated for {name}")
+                    logger.debug(f"Baseline calculated for {name}")
 
                     # Run traffic check in a thread (blocking function)
                     traffic = await run_in_thread(
@@ -75,7 +94,7 @@ async def post_traffic_alerts_async():
                         baseline
                     )
                     if not traffic:
-                        print(f"TRAFFIC: No traffic data returned for {name}")
+                        logger.warning(f"No traffic data returned for {name}")
                         continue
 
                     current_state = traffic["state"]
@@ -93,7 +112,7 @@ async def post_traffic_alerts_async():
                         embed = {
                             "title": f"Traffic Status - {name}",
                             "color": color,
-                            "timestamp": datetime.utcnow().isoformat(),
+                            "timestamp": datetime.now(timezone.utc).isoformat(),  # Fix deprecation warning
                             "fields": [
                                 {"name": "State", "value": current_state, "inline": True},
                                 {"name": "Distance", "value": f"{traffic['distance_km']:.2f} km", "inline": True},
@@ -107,9 +126,9 @@ async def post_traffic_alerts_async():
                         async with session.post(WEBHOOK_URL, json={"embeds": [embed]}, timeout=10) as resp:
                             if resp.status not in (200, 204):
                                 text = await resp.text()
-                                print(f"❌ Failed to post alert for {name}: {resp.status} - {text}")
+                                logger.error(f"Failed to post alert for {name}: {resp.status} - {text}")
                             else:
-                                print(f"✅ Alert posted for {name}")
+                                logger.info(f"Alert posted for {name}")
                                 alerts_posted += 1
 
                     # Update DB asynchronously
@@ -117,20 +136,26 @@ async def post_traffic_alerts_async():
                     await run_in_thread(update_last_state, route_id, current_state)
 
                 except Exception as e:
-                    print(f"❌ Error processing route '{route.get('name','Unknown')}': {e}")
+                    logger.error(f"Error processing route '{route.get('name','Unknown')}': {e}")
 
         if alerts_posted == 0:
-            print("TRAFFIC: No traffic alerts were necessary")
+            logger.info("No traffic alerts were necessary")
         else:
-            print(f"TRAFFIC: Completed processing. {alerts_posted} alert(s) posted")
+            logger.info(f"Completed processing. {alerts_posted} alert(s) posted")
 
     except Exception as e:
-        print(f"ERROR: Traffic processing failed: {e}")
+        logger.error(f"Traffic processing failed: {e}")
 
 
 # ---------------------
 # Run standalone
 # ---------------------
 if __name__ == "__main__":
-    print("Starting traffic alert processing...")
-    asyncio.run(post_traffic_alerts_async())
+    logger.info("Starting traffic alert processing...")
+    try:
+        asyncio.run(post_traffic_alerts_async())
+    except KeyboardInterrupt:
+        logger.info("Traffic alert processing stopped by user")
+    except Exception as e:
+        logger.error(f"Traffic alert processing failed: {e}")
+        raise
