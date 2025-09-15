@@ -300,19 +300,9 @@ async def with_error_recovery(coro_func, *args, **kwargs):
 async def async_get_routes():
     """Async wrapper for get_routes with error recovery"""
     try:
-        print("DEBUG: async_get_routes() called")
         result = await with_error_recovery(lambda: run_in_thread(get_routes))
-        print(f"DEBUG: async_get_routes() returned {len(result) if result else 0} routes")
-        if result:
-            for i, route in enumerate(result):
-                print(f"DEBUG: Route {i}: {route.get('name')} - coordinates types: "
-                      f"lat={type(route.get('start_lat'))}, lng={type(route.get('start_lng'))}")
         return result
     except Exception as e:
-        print(f"DEBUG: async_get_routes() failed with error: {e}")
-        print(f"DEBUG: Error type: {type(e)}")
-        import traceback
-        print(f"DEBUG: Traceback: {traceback.format_exc()}")
         raise
 
 async def async_add_route(name, start_lat, start_lng, end_lat, end_lng):
@@ -334,17 +324,11 @@ async def async_get_route_map(name, start_lat, start_lng, end_lat, end_lng):
 async def async_check_traffic(start_coord, end_coord, baseline=None):
     """Async wrapper for traffic checking with error recovery"""
     try:
-        print(f"DEBUG: async_check_traffic() called with start={start_coord}, end={end_coord}, baseline={baseline}")
         result = await with_error_recovery(
             lambda: run_in_thread(check_route_traffic, start_coord, end_coord, baseline)
         )
-        print(f"DEBUG: async_check_traffic() returned: {result}")
         return result
     except Exception as e:
-        print(f"DEBUG: async_check_traffic() failed with error: {e}")
-        print(f"DEBUG: Error type: {type(e)}")
-        import traceback
-        print(f"DEBUG: Traceback: {traceback.format_exc()}")
         raise
 
 async def async_get_thresholds():
@@ -1188,22 +1172,9 @@ class CheckAllRoutesButton(Button):
                         "traffic": {"error": str(e), "state": "Error"}
                     })
 
-            print(f"DEBUG: Creating TrafficPaginationView with {len(results)} results")
-            for i, result in enumerate(results):
-                print(f"DEBUG: Result {i}: route={type(result.get('route'))}, traffic={type(result.get('traffic'))}")
-                if 'route' in result:
-                    print(f"DEBUG: Route data: {result['route']}")
-                if 'traffic' in result:
-                    print(f"DEBUG: Traffic data: {result['traffic']}")
-
             view = TrafficPaginationView(results, original_message=interaction.message)
-            print("DEBUG: TrafficPaginationView created successfully")
-
             embed, attachments = await view.get_page_embed()
-            print("DEBUG: get_page_embed completed successfully")
-
             await interaction.edit_original_response(embed=embed, attachments=attachments, view=view)
-            print("DEBUG: interaction.edit_original_response completed successfully")
 
         except RuntimeError as e:
             if "shutdown" in str(e).lower():
@@ -1269,7 +1240,8 @@ class SelectRoute(Select):
                 state_text = "Normal" if traffic['state'] == 'Normal' else "Heavy"
 
             embed = Embed(
-                title=f"Traffic Status - {name}",
+                title="Traffic Status",
+                description=f"**Route:** {name}",
                 color=color,
                 timestamp=datetime.now(timezone.utc)
             )
@@ -1348,13 +1320,8 @@ class TrafficPaginationView(View):
             return None, []
 
         try:
-            print(f"DEBUG: get_page_embed() - current_page={self.current_page}, total_results={len(self.results)}")
             result = self.results[self.current_page]
-            print(f"DEBUG: get_page_embed() - result keys: {result.keys()}")
             route = result["route"]
-            print(f"DEBUG: get_page_embed() - route type: {type(route)}")
-            print(f"DEBUG: get_page_embed() - route keys: {route.keys() if hasattr(route, 'keys') else 'No keys method'}")
-            print(f"DEBUG: get_page_embed() - route data: {route}")
 
             # Access route data using keys instead of unpacking to ensure proper types
             r_id = route['id']
@@ -1375,7 +1342,8 @@ class TrafficPaginationView(View):
                 state_text = "Normal" if traffic['state'] == 'Normal' else "Heavy"
 
             embed = Embed(
-                title=f"Traffic Status - {name}",
+                title="Traffic Status",
+                description=f"**Route:** {name}",
                 color=color,
                 timestamp=datetime.now(timezone.utc)
             )
@@ -1686,7 +1654,7 @@ class ThresholdsView(View):
         draw = ImageDraw.Draw(image)
 
         # Draw header
-        headers = ["Distance Range", "Route Multiplier", "Segment Multiplier", "Route Delay", "Segment Delay"]
+        headers = ["Distance Range", "Route Delay", "Segment Delay", "Segment Multiplier", "Route Multiplier"]
         x = padding
         y = padding
         for i, header in enumerate(headers):
@@ -1732,18 +1700,18 @@ class SensitivityHelpButton(Button):
             title="Threshold Guide",
             description=(
                 "**Definitions with Examples:**\n"
-                "- **Route Time Multiplier:**\n"
-                "    Multiplies route normal time to set threshold.\n"
-                "    Example: 30 min × 1.5 = 45 min → route flagged if >45 min\n\n"
-                "- **Segment Time Multiplier:**\n"
-                "    Multiplies segment normal time to flag that segment individually.\n"
-                "    Example: 5 min × 2 = 10 min → segment flagged if >10 min\n\n"
                 "- **Route Delay Allowance:**\n"
                 "    Extra minutes over normal route time before flagging route.\n"
                 "    Example: 30 min + 5 min = 35 min → route flagged if >35 min\n\n"
                 "- **Segment Delay Allowance:**\n"
                 "    Extra minutes per segment before flagging segment.\n"
                 "    Example: 5 min + 2 min = 7 min → segment flagged if >7 min\n\n"
+                "- **Route Time Multiplier:**\n"
+                "    Multiplies route normal time to set threshold.\n"
+                "    Example: 30 min × 1.5 = 45 min → route flagged if >45 min\n\n"
+                "- **Segment Time Multiplier:**\n"
+                "    Multiplies segment normal time to flag that segment individually.\n"
+                "    Example: 5 min × 2 = 10 min → segment flagged if >10 min\n\n"
                 "**Sensitivity Helper:**\n"
                 "- **More Sensitive (flags traffic earlier):**\n"
                 "    Increase multipliers\n"

@@ -65,13 +65,10 @@ def update_last_state(route_id, new_state, conn=None):
 async def post_traffic_alerts_async():
     try:
         logger.info("Starting processing of all routes...")
-        print("DEBUG: post_traffic_alerts_async() - calling get_routes")
         routes = await run_in_thread(get_routes)
-        print(f"DEBUG: post_traffic_alerts_async() - got {len(routes) if routes else 0} routes")
 
         if not routes:
             logger.info("No routes found in the database.")
-            print("DEBUG: No routes found, returning early")
             return
 
         alerts_posted = 0
@@ -80,9 +77,6 @@ async def post_traffic_alerts_async():
         async with aiohttp.ClientSession() as session:
             for route in routes:
                 try:
-                    print(f"DEBUG: notify - route type: {type(route)}")
-                    print(f"DEBUG: notify - route keys: {route.keys() if hasattr(route, 'keys') else 'No keys method'}")
-                    print(f"DEBUG: notify - route data: {route}")
 
                     route_id = route["id"]
                     name = route["name"]
@@ -93,16 +87,11 @@ async def post_traffic_alerts_async():
                     historical_json = route.get("historical_times", "[]")
 
                     logger.info(f"Processing route '{name}'")
-                    print(f"DEBUG: Processing route: {name} - coordinates: "
-                          f"({start_lat},{start_lng}) to ({end_lat},{end_lng}) - "
-                          f"types: lat={type(start_lat)}, lng={type(start_lng)}")
 
                     historical_data = json.loads(historical_json) if historical_json else []
                     baseline = calculate_baseline(historical_data)
                     logger.debug(f"Baseline calculated for {name}")
 
-                    print(f"DEBUG: notify - calling check_route_traffic with: "
-                          f"start={start_lat},{start_lng}, end={end_lat},{end_lng}, baseline={baseline}")
 
                     # Run traffic check in a thread (blocking function)
                     traffic = await run_in_thread(
@@ -112,7 +101,6 @@ async def post_traffic_alerts_async():
                         baseline
                     )
 
-                    print(f"DEBUG: notify - traffic result: {traffic}")
                     if not traffic:
                         logger.warning(f"No traffic data returned for {name}")
                         continue
@@ -129,10 +117,20 @@ async def post_traffic_alerts_async():
 
                     if should_post:
                         color = 0x00FF00 if current_state.lower() == "normal" else 0xFF0000
+
+                        # Generate read-aloud sentence
+                        if current_state.lower() == "heavy":
+                            sentence = f"Heavy traffic detected on {name}, current delay is {traffic['total_delay']} minutes."
+                        elif prev_state and prev_state.lower() == "heavy" and current_state.lower() == "normal":
+                            sentence = f"You can expect normal travel times on {name}."
+                        else:
+                            sentence = f"Traffic status update for {name}."
+
                         embed = {
-                            "title": f"Traffic Status - {name}",
+                            "title": "Traffic Status",
+                            "description": f"**Route:** {name}",
                             "color": color,
-                            "timestamp": datetime.now(timezone.utc).isoformat(),  # Fix deprecation warning
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
                             "fields": [
                                 {"name": "State", "value": current_state, "inline": True},
                                 {"name": "Distance", "value": f"{traffic['distance_km']:.2f} km", "inline": True},
@@ -140,6 +138,7 @@ async def post_traffic_alerts_async():
                                 {"name": "Normal Time", "value": f"{traffic['total_normal']} min", "inline": True},
                                 {"name": "Delay", "value": f"{traffic['total_delay']} min", "inline": True},
                                 {"name": "Heavy Segments", "value": summarize_segments(traffic['heavy_segments']) or 'None', "inline": False},
+                                {"name": "Read Aloud", "value": sentence, "inline": False}
                             ]
                         }
 
@@ -156,10 +155,6 @@ async def post_traffic_alerts_async():
                     await run_in_thread(update_last_state, route_id, current_state)
 
                 except Exception as e:
-                    print(f"DEBUG: notify - Exception in route processing: {e}")
-                    print(f"DEBUG: notify - Exception type: {type(e)}")
-                    import traceback
-                    print(f"DEBUG: notify - Traceback: {traceback.format_exc()}")
                     logger.error(f"Error processing route '{route.get('name','Unknown')}': {e}")
 
         if alerts_posted == 0:
