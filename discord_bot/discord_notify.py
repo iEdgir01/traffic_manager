@@ -63,10 +63,13 @@ def update_last_state(route_id, state, conn=None):
 async def post_traffic_alerts_async():
     try:
         logger.info("Starting processing of all routes...")
+        print("DEBUG: post_traffic_alerts_async() - calling get_routes")
         routes = await run_in_thread(get_routes)
+        print(f"DEBUG: post_traffic_alerts_async() - got {len(routes) if routes else 0} routes")
 
         if not routes:
             logger.info("No routes found in the database.")
+            print("DEBUG: No routes found, returning early")
             return
 
         alerts_posted = 0
@@ -84,6 +87,9 @@ async def post_traffic_alerts_async():
                     historical_json = route.get("historical_times", "[]")
 
                     logger.info(f"Processing route '{name}'")
+                    print(f"DEBUG: Processing route: {name} - coordinates: "
+                          f"({start_lat},{start_lng}) to ({end_lat},{end_lng}) - "
+                          f"types: lat={type(start_lat)}, lng={type(start_lng)}")
 
                     historical_data = json.loads(historical_json) if historical_json else []
                     baseline = calculate_baseline(historical_data)

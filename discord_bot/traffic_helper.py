@@ -299,7 +299,21 @@ async def with_error_recovery(coro_func, *args, **kwargs):
 # Updated async wrappers with error recovery
 async def async_get_routes():
     """Async wrapper for get_routes with error recovery"""
-    return await with_error_recovery(lambda: run_in_thread(get_routes))
+    try:
+        print("DEBUG: async_get_routes() called")
+        result = await with_error_recovery(lambda: run_in_thread(get_routes))
+        print(f"DEBUG: async_get_routes() returned {len(result) if result else 0} routes")
+        if result:
+            for i, route in enumerate(result):
+                print(f"DEBUG: Route {i}: {route.get('name')} - coordinates types: "
+                      f"lat={type(route.get('start_lat'))}, lng={type(route.get('start_lng'))}")
+        return result
+    except Exception as e:
+        print(f"DEBUG: async_get_routes() failed with error: {e}")
+        print(f"DEBUG: Error type: {type(e)}")
+        import traceback
+        print(f"DEBUG: Traceback: {traceback.format_exc()}")
+        raise
 
 async def async_add_route(name, start_lat, start_lng, end_lat, end_lng):
     """Async wrapper for adding route with error recovery"""
@@ -319,9 +333,19 @@ async def async_get_route_map(name, start_lat, start_lng, end_lat, end_lng):
 
 async def async_check_traffic(start_coord, end_coord, baseline=None):
     """Async wrapper for traffic checking with error recovery"""
-    return await with_error_recovery(
-        lambda: run_in_thread(check_route_traffic, start_coord, end_coord, baseline)
-    )
+    try:
+        print(f"DEBUG: async_check_traffic() called with start={start_coord}, end={end_coord}, baseline={baseline}")
+        result = await with_error_recovery(
+            lambda: run_in_thread(check_route_traffic, start_coord, end_coord, baseline)
+        )
+        print(f"DEBUG: async_check_traffic() returned: {result}")
+        return result
+    except Exception as e:
+        print(f"DEBUG: async_check_traffic() failed with error: {e}")
+        print(f"DEBUG: Error type: {type(e)}")
+        import traceback
+        print(f"DEBUG: Traceback: {traceback.format_exc()}")
+        raise
 
 async def async_get_thresholds():
     """Async wrapper for get_thresholds with error recovery"""
