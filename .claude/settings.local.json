@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python -m pylint:*)"
+      "Bash(python -m pylint:*)",
+      "Bash(git push:*)"
     ],
     "deny": [],
     "ask": []
