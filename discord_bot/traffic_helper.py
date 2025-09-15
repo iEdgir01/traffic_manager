@@ -299,7 +299,7 @@ async def with_error_recovery(coro_func, *args, **kwargs):
 # Updated async wrappers with error recovery
 async def async_get_routes():
     """Async wrapper for get_routes with error recovery"""
-    return await with_error_recovery(lambda: run_in_thread(get_routes()))
+    return await with_error_recovery(lambda: run_in_thread(get_routes))
 
 async def async_add_route(name, start_lat, start_lng, end_lat, end_lng):
     """Async wrapper for adding route with error recovery"""
