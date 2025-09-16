@@ -71,7 +71,7 @@ def with_db(func):
 # ---------------------
 @with_db
 def init_db(conn=None) -> None:
-    """Initialize the database tables.
+    """Initialize the database tables and apply migrations.
 
     Args:
         conn: Database connection (injected by decorator)
@@ -87,7 +87,8 @@ def init_db(conn=None) -> None:
                 end_lng REAL,
                 last_normal_time INTEGER,
                 last_state TEXT,
-                historical_times TEXT
+                historical_times TEXT,
+                priority VARCHAR(10) DEFAULT 'Normal' CHECK (priority IN ('High', 'Normal'))
             )
         ''')
         cursor.execute('''
@@ -97,6 +98,13 @@ def init_db(conn=None) -> None:
                 value TEXT
             )
         ''')
+
+    # Apply database migrations for existing installations
+    try:
+        from migrations import migrate_database
+        migrate_database(conn)
+    except ImportError:
+        logger.warning("Migration module not found, skipping migrations")
 
 @with_db
 def get_routes(conn=None) -> List[Dict[str, Any]]:
@@ -118,6 +126,22 @@ def get_routes(conn=None) -> List[Dict[str, Any]]:
             row['end_lat'] = float(row['end_lat'])
             row['end_lng'] = float(row['end_lng'])
         return rows
+
+@with_db
+def get_route_priority(route_name: str, conn=None) -> str:
+    """Get priority level for a specific route by name.
+
+    Args:
+        route_name: Name of the route
+        conn: Database connection (injected by decorator)
+
+    Returns:
+        Priority level ('High' or 'Normal'), defaults to 'Normal' if not found
+    """
+    with conn.cursor() as cursor:
+        cursor.execute('SELECT priority FROM routes WHERE name = %s', (route_name,))
+        row = cursor.fetchone()
+        return row['priority'] if row else 'Normal'
 
 @with_db
 def update_route_time(route_id: Optional[int], normal_time: int, state: str, conn=None) -> None:
@@ -153,7 +177,7 @@ def update_route_time(route_id: Optional[int], normal_time: int, state: str, con
 
 @with_db
 def add_route(name: str, start_lat: float, start_lng: float,
-              end_lat: float, end_lng: float, conn=None) -> None:
+              end_lat: float, end_lng: float, priority: str = "Normal", conn=None) -> None:
     """Add a new route to the database.
 
     Args:
@@ -162,6 +186,7 @@ def add_route(name: str, start_lat: float, start_lng: float,
         start_lng: Starting longitude
         end_lat: Ending latitude
         end_lng: Ending longitude
+        priority: Route priority ('High' or 'Normal')
         conn: Database connection (injected by decorator)
     """
     # Ensure the coordinates are floats
@@ -173,9 +198,23 @@ def add_route(name: str, start_lat: float, start_lng: float,
     with conn.cursor() as cursor:
         cursor.execute("""
             INSERT INTO routes (name, start_lat, start_lng, end_lat, end_lng,
-                              last_normal_time, last_state, historical_times)
-            VALUES (%s, %s, %s, %s, %s, NULL, 'Normal', '[]')
-        """, (name, start_lat, start_lng, end_lat, end_lng))
+                              last_normal_time, last_state, historical_times, priority)
+            VALUES (%s, %s, %s, %s, %s, NULL, 'Normal', '[]', %s)
+        """, (name, start_lat, start_lng, end_lat, end_lng, priority))
+
+@with_db
+def update_route_priority(name: str, priority: str, conn=None) -> None:
+    """Update a route's priority.
+
+    Args:
+        name: Route name
+        priority: New priority ('High' or 'Normal')
+        conn: Database connection (injected by decorator)
+    """
+    with conn.cursor() as cursor:
+        cursor.execute("""
+            UPDATE routes SET priority = %s WHERE name = %s
+        """, (priority, name))
 
 @with_db
 def delete_route(name: str, conn=None) -> None:

@@ -16,6 +16,7 @@ COPY route_manager.py /app/route_manager.py
 COPY discord_bot /app/discord_bot
 COPY ignition_subscriber /app/ignition_subscriber
 COPY traffic_utils.py /app/traffic_utils.py
+COPY migrations.py /app/migrations.py
 COPY requirements.txt /app/requirements.txt
 
 # --------------------
@@ -29,10 +30,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN mkdir -p /app/data/maps
 
 # --------------------
-# Create a CLI alias 'menu' for route_manager.py
+# Create CLI aliases
 # --------------------
 RUN echo '#!/bin/bash\npython3 /app/route_manager.py' > /usr/local/bin/menu \
     && chmod +x /usr/local/bin/menu
+
+RUN printf '#!/bin/sh\npython3 /app/ignition_subscriber/test_ignition.py\n' > /usr/local/bin/test_ignition \
+    && chmod +x /usr/local/bin/test_ignition
 
 # --------------------
 # Expose ports if needed

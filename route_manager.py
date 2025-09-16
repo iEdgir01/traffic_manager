@@ -16,7 +16,8 @@ from traffic_utils import (
     get_route_map,
     process_all_routes,
     add_route,
-    delete_route
+    delete_route,
+    update_route_priority
 )
 
 # ---------------------
@@ -108,6 +109,19 @@ def add_route_cli() -> None:
     end_dms = input("End coordinate (DMS) (or Enter to cancel): ").strip()
     if not end_dms:
         return
+
+    # Priority prompt
+    while True:
+        priority_input = input("Priority (H for High, N for Normal, or Enter for Normal): ").strip().upper()
+        if not priority_input or priority_input == 'N':
+            priority = 'Normal'
+            break
+        elif priority_input == 'H':
+            priority = 'High'
+            break
+        else:
+            print(f"{Colors.YELLOW}⚠ Please enter 'H' for High, 'N' for Normal, or press Enter for Normal.{Colors.RESET}")
+
     try:
         start_lat, start_lng = parse_dms_pair(start_dms)
         end_lat, end_lng = parse_dms_pair(end_dms)
@@ -123,7 +137,7 @@ def add_route_cli() -> None:
         input(f"\n{Colors.CYAN}Press Enter to return to menu...{Colors.RESET}")
         return
 
-    add_route(name, start_lat, start_lng, end_lat, end_lng)
+    add_route(name, start_lat, start_lng, end_lat, end_lng, priority)
     get_route_map(name, start_lat, start_lng, end_lat, end_lng)
     print(f"{Colors.GREEN}✅ Route '{name}' added successfully.{Colors.RESET}")
     input(f"\n{Colors.CYAN}Press Enter to return to menu...{Colors.RESET}")
@@ -156,10 +170,73 @@ def list_routes() -> None:
         else:
             map_status = f"{Colors.GREEN}Exists{Colors.RESET}"
 
+        priority = route.get('priority', 'Normal')
+        priority_color = Colors.RED if priority == 'High' else Colors.GREEN
         print(f"{Colors.YELLOW}{idx}.{Colors.RESET} {route_name} | "
+              f"Priority: {priority_color}{priority}{Colors.RESET} | "
               f"Start: ({route['start_lat']},{route['start_lng']}) | "
               f"End: ({route['end_lat']},{route['end_lng']}) | "
               f"Last state: {route['last_state']} | Map: {map_status}")
+
+    input(f"\n{Colors.CYAN}Press Enter to return to menu...{Colors.RESET}")
+
+def update_priority_cli() -> None:
+    """Interactive CLI interface for updating route priority."""
+    os.system('cls' if os.name=='nt' else 'clear')
+    print(f"{Colors.BLUE}=== Update Route Priority ==={Colors.RESET}\n")
+    init_db()
+    routes = get_routes()
+
+    if not routes:
+        print(f"{Colors.RED}No routes found.{Colors.RESET}")
+        input(f"\n{Colors.CYAN}Press Enter to return to menu...{Colors.RESET}")
+        return
+
+    # Display routes with current priorities
+    for idx, route in enumerate(routes, start=1):
+        priority = route.get('priority', 'Normal')
+        priority_color = Colors.RED if priority == 'High' else Colors.GREEN
+        print(f"{Colors.YELLOW}{idx}.{Colors.RESET} {route['name']} | "
+              f"Priority: {priority_color}{priority}{Colors.RESET}")
+
+    while True:
+        try:
+            choice = input(f"\nSelect route number (or Enter to cancel): ").strip()
+            if not choice:
+                return
+
+            route_idx = int(choice) - 1
+            if 0 <= route_idx < len(routes):
+                break
+            else:
+                print(f"{Colors.RED}⚠ Invalid selection. Please choose 1-{len(routes)}.{Colors.RESET}")
+        except ValueError:
+            print(f"{Colors.RED}⚠ Please enter a valid number.{Colors.RESET}")
+
+    selected_route = routes[route_idx]
+    current_priority = selected_route.get('priority', 'Normal')
+
+    print(f"\nRoute: {Colors.CYAN}{selected_route['name']}{Colors.RESET}")
+    print(f"Current priority: {Colors.RED if current_priority == 'High' else Colors.GREEN}{current_priority}{Colors.RESET}")
+
+    while True:
+        priority_input = input("New priority (H for High, N for Normal, or Enter to cancel): ").strip().upper()
+        if not priority_input:
+            return
+        elif priority_input == 'H':
+            new_priority = 'High'
+            break
+        elif priority_input == 'N':
+            new_priority = 'Normal'
+            break
+        else:
+            print(f"{Colors.YELLOW}⚠ Please enter 'H' for High or 'N' for Normal.{Colors.RESET}")
+
+    try:
+        update_route_priority(selected_route['name'], new_priority)
+        print(f"{Colors.GREEN}✅ Priority updated to {new_priority} for '{selected_route['name']}'{Colors.RESET}")
+    except Exception as e:
+        print(f"{Colors.RED}⚠ Failed to update priority: {e}{Colors.RESET}")
 
     input(f"\n{Colors.CYAN}Press Enter to return to menu...{Colors.RESET}")
 
@@ -382,16 +459,18 @@ def main_menu():
         print(f"{Colors.YELLOW}[1]{Colors.RESET} Traffic Thresholds")
         print(f"{Colors.YELLOW}[2]{Colors.RESET} Add route")
         print(f"{Colors.YELLOW}[3]{Colors.RESET} List all routes")
-        print(f"{Colors.YELLOW}[4]{Colors.RESET} Check traffic for a route")
-        print(f"{Colors.YELLOW}[5]{Colors.RESET} Check traffic for all routes")
-        print(f"{Colors.YELLOW}[6]{Colors.RESET} Remove a route")
-        print(f"{Colors.YELLOW}[7]{Colors.RESET} Exit")
+        print(f"{Colors.YELLOW}[4]{Colors.RESET} Update route priority")
+        print(f"{Colors.YELLOW}[5]{Colors.RESET} Check traffic for a route")
+        print(f"{Colors.YELLOW}[6]{Colors.RESET} Check traffic for all routes")
+        print(f"{Colors.YELLOW}[7]{Colors.RESET} Remove a route")
+        print(f"{Colors.YELLOW}[8]{Colors.RESET} Exit")
 
         choice = input("\nSelect option: ").strip()
         if choice=="1": show_thresholds()
         elif choice=="2": add_route_cli()
         elif choice=="3": list_routes()
-        elif choice=="4":
+        elif choice=="4": update_priority_cli()
+        elif choice=="5":
             os.system('cls' if os.name=='nt' else 'clear')
             routes = get_routes()
             if not routes:

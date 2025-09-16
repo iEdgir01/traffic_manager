@@ -13,6 +13,7 @@ WORKDIR /app
 # --------------------
 COPY discord_bot /app/discord_bot
 COPY traffic_utils.py /app/traffic_utils.py
+COPY migrations.py /app/migrations.py
 COPY route_manager.py /app/route_manager.py
 COPY requirements.txt /app/requirements.txt
 

@@ -15,7 +15,7 @@ from typing import List, Dict, Any, Optional
 
 import aiohttp
 from traffic_utils import (
-    with_db, summarize_segments, get_routes,
+    with_db, summarize_segments, get_routes, get_route_priority,
     calculate_baseline, check_route_traffic, update_route_time
 )
 
@@ -379,16 +379,41 @@ async def post_traffic_alerts_async():
             else:
                 logger.info("No traffic state changes detected - skipping Discord alert")
 
-        # Always generate Claude summary for Gotify TTS (regardless of traffic state)
+        # Priority-aware Claude summary for Gotify TTS
         if route_data and GOTIFY_URL and GOTIFY_TOKEN:
-            logger.info("Generating Claude summary for Gotify notification...")
-            claude_summary = await generate_claude_summary(route_data)
+            # Filter routes for Gotify/LLM processing based on priority logic
+            gotify_routes = []
+            for route in route_data:
+                route_name = route["name"]
+                current_state = route["status"].lower()
+                prev_state = route.get("prev_state", "").lower() if route.get("prev_state") else ""
 
-            try:
-                await send_gotify_notification("Traffic Summary", claude_summary)
-                logger.info("Gotify notification with Claude summary sent successfully")
-            except Exception as gotify_error:
-                logger.error(f"Failed to send Gotify notification: {gotify_error}")
+                # Get route priority from database
+                route_priority = await run_in_thread(get_route_priority, route_name)
+
+                # High Priority: Always include
+                if route_priority == "High":
+                    gotify_routes.append(route)
+                    logger.debug(f"Including High priority route '{route_name}' in Gotify summary")
+                # Normal Priority: Only when Heavy OR was Heavy→Normal
+                elif route_priority == "Normal":
+                    if current_state == "heavy" or (prev_state == "heavy" and current_state == "normal"):
+                        gotify_routes.append(route)
+                        logger.debug(f"Including Normal priority route '{route_name}' in Gotify summary (traffic condition met)")
+                    else:
+                        logger.debug(f"Skipping Normal priority route '{route_name}' from Gotify summary (no traffic condition)")
+
+            if gotify_routes:
+                logger.info(f"Generating Claude summary for {len(gotify_routes)} eligible routes...")
+                claude_summary = await generate_claude_summary(gotify_routes)
+
+                try:
+                    await send_gotify_notification("Traffic Summary", claude_summary)
+                    logger.info("Gotify notification with Claude summary sent successfully")
+                except Exception as gotify_error:
+                    logger.error(f"Failed to send Gotify notification: {gotify_error}")
+            else:
+                logger.info("No routes meet criteria for Gotify notification - skipping")
         elif route_data:
             logger.info("Route data available but Gotify not configured, skipping notification")
 

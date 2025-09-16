@@ -30,7 +30,8 @@ from traffic_utils import (
     set_thresholds,
     reset_thresholds,
     add_route,
-    delete_route
+    delete_route,
+    update_route_priority
 )
 # ---------------------
 # logging
@@ -305,10 +306,10 @@ async def async_get_routes():
     except Exception as e:
         raise
 
-async def async_add_route(name, start_lat, start_lng, end_lat, end_lng):
+async def async_add_route(name, start_lat, start_lng, end_lat, end_lng, priority="Normal"):
     """Async wrapper for adding route with error recovery"""
     return await with_error_recovery(
-        lambda: run_in_thread(register_route_and_generate_map, name, start_lat, start_lng, end_lat, end_lng)
+        lambda: run_in_thread(register_route_and_generate_map, name, start_lat, start_lng, end_lat, end_lng, priority)
     )
 
 async def async_delete_route(name):
@@ -416,9 +417,9 @@ def haversine_distance(lat1, lon1, lat2, lon2):
 # --------------------
 # Blocking processing
 # --------------------
-def register_route_and_generate_map(name, start_lat, start_lng, end_lat, end_lng):
+def register_route_and_generate_map(name, start_lat, start_lng, end_lat, end_lng, priority="Normal"):
     try:
-        add_route(name, start_lat, start_lng, end_lat, end_lng)
+        add_route(name, start_lat, start_lng, end_lat, end_lng, priority)
     except Exception as e:
         raise e
 
@@ -538,10 +539,17 @@ class AddRouteModal(discord.ui.Modal):
             label="End coordinate (DMS)",
             placeholder='33°56\'00"S 18°22\'00"E'
         )
+        self.priority = discord.ui.TextInput(
+            label="Priority (High/Normal)",
+            placeholder="Normal",
+            default="Normal",
+            max_length=6
+        )
 
         self.add_item(self.route_name)
         self.add_item(self.start_coord)
         self.add_item(self.end_coord)
+        self.add_item(self.priority)
 
     async def on_submit(self, interaction: discord.Interaction):
         if _shutting_down:
@@ -550,10 +558,19 @@ class AddRouteModal(discord.ui.Modal):
         route_name = str(self.route_name)
         start_raw = str(self.start_coord)
         end_raw = str(self.end_coord)
+        priority_raw = str(self.priority).strip().title()
 
         if not route_name:
             try:
                 await interaction.response.send_message("Route name is required.", ephemeral=True)
+            except (discord.NotFound, discord.HTTPException):
+                pass
+            return
+
+        # Validate priority
+        if priority_raw not in ["High", "Normal"]:
+            try:
+                await interaction.response.send_message("Priority must be 'High' or 'Normal'.", ephemeral=True)
             except (discord.NotFound, discord.HTTPException):
                 pass
             return
@@ -564,7 +581,7 @@ class AddRouteModal(discord.ui.Modal):
             start_lat, start_lng = await run_in_thread(parse_dms_pair, start_raw)
             end_lat, end_lng = await run_in_thread(parse_dms_pair, end_raw)
             
-            map_path = await async_add_route(route_name, start_lat, start_lng, end_lat, end_lng)
+            map_path = await async_add_route(route_name, start_lat, start_lng, end_lat, end_lng, priority_raw)
             
             distance_km = haversine_distance(start_lat, start_lng, end_lat, end_lng)
 
@@ -574,6 +591,7 @@ class AddRouteModal(discord.ui.Modal):
                 timestamp=datetime.now(timezone.utc)
             )
             embed.add_field(name="Distance", value=f"{distance_km:.2f} km", inline=True)
+            embed.add_field(name="Priority", value=priority_raw, inline=True)
             embed.add_field(name="Start", value=f"{start_lat:.6f}, {start_lng:.6f}", inline=False)
             embed.add_field(name="End", value=f"{end_lat:.6f}, {end_lng:.6f}", inline=False)
 
@@ -688,6 +706,7 @@ class RoutesPagination(View):
                 timestamp=datetime.now(timezone.utc)
             )
             embed.add_field(name="Distance", value=f"{distance_km:.2f} km", inline=True)
+            embed.add_field(name="Priority", value=route.get('priority', 'Normal'), inline=True)
             embed.add_field(name="Start", value=f"{start_lat:.6f}, {start_lng:.6f}", inline=False)
             embed.add_field(name="End", value=f"{end_lat:.6f}, {end_lng:.6f}", inline=False)
             embed.set_footer(text=f"Page {self.index + 1} of {len(self.routes)}")
@@ -718,6 +737,30 @@ class RoutesPagination(View):
                     
         except (discord.NotFound, discord.HTTPException):
             pass
+
+    @discord.ui.button(label="Update Priority", style=BotStyles.PRIMARY)
+    async def update_priority_button(self, interaction: discord.Interaction, button: Button):
+        if _shutting_down:
+            return
+
+        route = self.routes[self.index]
+        current_priority = route.get('priority', 'Normal')
+        new_priority = 'High' if current_priority == 'Normal' else 'Normal'
+
+        try:
+            await run_in_thread(update_route_priority, route['name'], new_priority)
+            self.routes[self.index]['priority'] = new_priority  # Update local cache
+            await self.update_embed(interaction)
+        except Exception as e:
+            embed = discord.Embed(
+                title="Priority Update Failed",
+                description=f"Failed to update priority: {str(e)}",
+                color=BotStyles.ERROR_COLOR
+            )
+            try:
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+            except (discord.NotFound, discord.HTTPException):
+                pass
 
     @discord.ui.button(label="Previous", style=BotStyles.SECONDARY)
     async def prev_button(self, interaction: discord.Interaction, button: Button):
