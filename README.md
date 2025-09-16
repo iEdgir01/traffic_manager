@@ -15,12 +15,13 @@ Traffic Manager is a comprehensive traffic monitoring system that automatically 
 - **Distance-Based Configuration**: Separate thresholds for different route lengths (0-2km, 2-5km, 5-20km, 20-50km)
 
 ### 🤖 Discord Bot Interface
-- **Route Management**: Add, remove, and list routes via Discord
+- **Route Management**: Add, remove, and list routes via Discord with priority assignment
+- **Priority System**: High/Normal priority routes with intelligent processing
 - **Live Traffic Checks**: Check individual or all routes
 - **Visual Maps**: Automatic route map generation using Google Static Maps API
 - **Threshold Configuration**: Manage traffic detection sensitivity
 - **Real-time Notifications**: Traffic state change alerts via webhooks
-- **Gotify Integration**: Push notifications sent to Gotify server for Android alerts
+- **Gotify Integration**: Priority-aware push notifications sent to Gotify server for Android alerts
 
 ### 📡 MQTT Integration
 - **Ignition Monitoring**: Automatic traffic checks when vehicle starts
@@ -28,10 +29,55 @@ Traffic Manager is a comprehensive traffic monitoring system that automatically 
 - **Reliable Messaging**: Robust MQTT subscriber with reconnection
 
 ### 🗄️ Data Management
-- **PostgreSQL Database**: Persistent storage for routes and traffic history
+- **PostgreSQL Database**: Persistent storage for routes, priorities, and traffic history
 - **Route Coordinates**: Support for DMS (Degrees Minutes Seconds) input
+- **Priority System**: High/Normal priority levels with automated migration
 - **Traffic History**: Historical data for baseline calculations
 - **Map Caching**: Generated route maps are cached for performance
+
+## Priority System
+
+### Overview
+
+Traffic Manager implements a sophisticated priority system that intelligently determines which routes receive LLM-generated traffic summaries and push notifications. This allows you to focus on critical routes while reducing noise from less important ones.
+
+### Priority Levels
+
+#### 🔴 High Priority Routes
+- **Always Processed**: Included in every traffic summary generation
+- **Immediate Notifications**: Get LLM-generated summaries regardless of traffic state
+- **Use Cases**: Critical commute routes, emergency routes, VIP routes
+
+#### 🟢 Normal Priority Routes
+- **Conditional Processing**: Only processed when traffic conditions warrant attention
+- **Smart Filtering**: Included in summaries when Heavy OR was Heavy→Normal
+- **Use Cases**: Optional routes, secondary paths, occasional destinations
+
+### Notification Logic
+
+#### Discord Notifications (Priority-Agnostic)
+- **Trigger**: Only on traffic state changes (Heavy→Normal OR Normal→Heavy)
+- **Content**: All routes displayed regardless of priority
+- **Purpose**: Complete traffic visibility for monitoring
+
+#### Gotify/LLM Processing (Priority-Aware)
+- **High Priority**: Always included in Claude AI traffic summaries
+- **Normal Priority**: Only when Heavy OR transitioned from Heavy→Normal
+- **Result**: Focused, relevant push notifications to your mobile device
+
+### Examples
+
+**Scenario 1**: Route A (High), Route B (Normal, currently Normal)
+- **Discord**: No notification (no state changes)
+- **Gotify**: Only Route A summary (High priority always processed)
+
+**Scenario 2**: Route A (High), Route B (Normal, currently Heavy)
+- **Discord**: Alert posted with both routes (state change detected)
+- **Gotify**: Both routes in summary (High always + Normal meets Heavy criteria)
+
+**Scenario 3**: Route A (High), Route B (Normal, was Heavy→now Normal)
+- **Discord**: Alert posted with both routes (state change detected)
+- **Gotify**: Both routes in summary (High always + Normal meets Heavy→Normal criteria)
 
 ## Architecture
 
@@ -132,7 +178,8 @@ GOTIFY_PRIORITY=5
 
 4. **Initialize the system**
    ```bash
-   # The database will be automatically initialized
+   # The database will be automatically initialized and migrated
+   # Existing installations will automatically upgrade to support priorities
    # Add your first route using the CLI or Discord bot
    ```
 
@@ -147,8 +194,9 @@ docker exec -it traffic_manager python route_manager.py
 ```
 
 **Available Commands:**
-- Add routes with DMS coordinates
-- List all routes with map generation status
+- Add routes with DMS coordinates and priority assignment
+- List all routes with priority status and map generation status
+- Update route priorities (High/Normal)
 - Check traffic for individual or all routes
 - Configure traffic detection thresholds
 - Remove routes
@@ -157,8 +205,9 @@ docker exec -it traffic_manager python route_manager.py
 
 Invite the bot to your Discord server and use the `!menu` command to access:
 
-- **Add Route**: Interactive modal for route creation
-- **List Routes**: Paginated route browser with maps
+- **Add Route**: Interactive modal for route creation with priority selection
+- **List Routes**: Paginated route browser with maps and priority display
+- **Update Priority**: Toggle route priority between High/Normal
 - **Remove Route**: Safe route deletion with confirmation
 - **Traffic Status**: Check individual or all routes
 - **Manage Thresholds**: Configure traffic detection sensitivity
@@ -215,6 +264,34 @@ Configure traffic detection sensitivity based on route distance:
 - **More Sensitive**: Increase factors, decrease delays
 - **Less Sensitive**: Decrease factors, increase delays
 
+### Priority Configuration
+
+Routes can be assigned one of two priority levels that control notification behavior:
+
+#### Setting Priorities
+
+**Via Discord Bot:**
+1. Use "Add Route" modal - select priority during creation
+2. Use "Update Priority" button in route browser to toggle High/Normal
+
+**Via CLI:**
+1. During route creation - prompted for priority selection
+2. Use "Update route priority" menu option to change existing routes
+
+#### Priority Recommendations
+
+**High Priority Routes:**
+- Daily commute routes
+- Critical business travel paths
+- Emergency or hospital routes
+- Routes with frequent heavy traffic
+
+**Normal Priority Routes:**
+- Weekend leisure routes
+- Alternative backup paths
+- Infrequently used routes
+- Routes with generally light traffic
+
 ### Route Input Format
 
 Routes support DMS (Degrees Minutes Seconds) coordinate input:
@@ -232,10 +309,11 @@ End: 25°35'00"S 28°20'00"E
 traffic_manager/
 ├── main.py                     # Application orchestrator
 ├── traffic_utils.py           # Core traffic logic & database
+├── migrations.py              # Database schema migrations
 ├── route_manager.py           # CLI interface
 ├── discord_bot/
 │   ├── traffic_helper.py      # Discord bot implementation
-│   └── discord_notify.py      # Notification service
+│   └── discord_notify.py      # Priority-aware notification service
 ├── ignition_subscriber/
 │   └── subscriber.py          # MQTT subscriber
 ├── test/                      # Test files
@@ -264,6 +342,13 @@ docker exec -it traffic_manager python test/ignition_subscriber/subscriber.py
 docker logs -f discord_bot
 docker logs -f ignition_subscriber
 docker logs -f postgres_db
+
+# CLI access in containers
+docker exec -it traffic_manager menu           # Route management CLI
+docker exec -it traffic_manager test_ignition  # MQTT ignition testing
+docker exec -it discord_bot menu               # Route management from bot container
+docker exec -it ignition_subscriber menu       # Route management from subscriber
+docker exec -it ignition_subscriber test_ignition  # MQTT testing from subscriber
 
 # Database access
 docker exec -it postgres_db psql -U traffic_user -d traffic_db
