@@ -19,15 +19,9 @@ from traffic_utils import (
     calculate_baseline, check_route_traffic, update_route_time
 )
 
-# Import balance tracker
-try:
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'balance_tracker'))
-    from balance_tracker import ClaudeBalanceTracker
-    BALANCE_TRACKING_AVAILABLE = True
-except ImportError as e:
-    logging.warning(f"Balance tracking not available: {e}")
-    BALANCE_TRACKING_AVAILABLE = False
-    ClaudeBalanceTracker = None
+# Balance tracking temporarily disabled for testing
+BALANCE_TRACKING_AVAILABLE = False
+ClaudeBalanceTracker = None
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,15 +46,8 @@ GOTIFY_PRIORITY = int(os.environ.get("GOTIFY_PRIORITY", "5")) if os.environ.get(
 CLAUDE_API_KEY = os.environ.get("CLAUDE_API_KEY")
 CLAUDE_SUMMARY_STYLE = os.environ.get("CLAUDE_SUMMARY_STYLE", "Generate a traffic summary in a random conversational style.")
 
-# Initialize balance tracker
+# Balance tracker temporarily disabled
 balance_tracker = None
-if BALANCE_TRACKING_AVAILABLE and CLAUDE_API_KEY:
-    try:
-        balance_tracker = ClaudeBalanceTracker()
-        logger.info("Balance tracker initialized")
-    except Exception as e:
-        logger.error(f"Failed to initialize balance tracker: {e}")
-        balance_tracker = None
 
 logger.info("Discord Notify module loaded")
 
@@ -74,12 +61,7 @@ async def generate_claude_summary(route_data: List[Dict]) -> str:
         logger.warning("CLAUDE_API_KEY not configured, using simple summary")
         return create_simple_summary(route_data)
 
-    # Check balance before making request
-    if balance_tracker:
-        can_make_request, reason = balance_tracker.can_make_request()
-        if not can_make_request:
-            logger.warning(f"Claude API request blocked: {reason}")
-            return create_simple_summary(route_data)
+    # Balance checking temporarily disabled
 
     try:
         # Calculate dynamic word limit: minimum 8 words per route + 20 extra for style
@@ -162,10 +144,7 @@ Create your summary now using the {chosen_style.split(':')[0]} style:"""
                 result = await resp.json()
                 summary = result["content"][0]["text"].strip()
 
-                # Track usage if balance tracker is available
-                if balance_tracker:
-                    cost = balance_tracker.track_claude_usage(result)
-                    logger.info(f"Claude usage tracked: ${cost}")
+                # Usage tracking temporarily disabled
 
                 logger.info(f"Generated Claude summary ({len(summary.split())} words) in style: {chosen_style.split(':')[0]}")
                 return summary
