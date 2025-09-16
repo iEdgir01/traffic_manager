@@ -4,6 +4,7 @@ import os
 import json
 import html
 import re
+import logging
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Tuple
@@ -11,6 +12,8 @@ from typing import Optional, List, Dict, Any, Tuple
 import psycopg2
 import psycopg2.extras
 import requests
+
+logger = logging.getLogger(__name__)
 
 # ---------------------
 # Environment variables
@@ -102,9 +105,13 @@ def init_db(conn=None) -> None:
     # Apply database migrations for existing installations
     try:
         from migrations import migrate_database
-        migrate_database(conn)
-    except ImportError:
-        logger.warning("Migration module not found, skipping migrations")
+        logger.info("Running database migrations...")
+        migrate_database()
+    except ImportError as e:
+        logger.warning(f"Migration module not found, skipping migrations: {e}")
+    except Exception as e:
+        logger.error(f"Migration execution failed: {e}")
+        # Don't raise here - let the application continue with base schema
 
 @with_db
 def get_routes(conn=None) -> List[Dict[str, Any]]:

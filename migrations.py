@@ -6,54 +6,79 @@ for existing installations to maintain backward compatibility.
 
 import logging
 from typing import Optional
-from .traffic_utils import with_db
 
 logger = logging.getLogger(__name__)
 
-@with_db
-def migrate_database(conn=None) -> None:
+def migrate_database() -> None:
     """Apply database migrations for existing installations.
 
-    Args:
-        conn: Database connection (injected by decorator)
+    This function will be called with @with_db decorator from traffic_utils.
     """
-    with conn.cursor() as cursor:
-        # Migration 1: Add priority column to routes table
-        _migrate_add_priority_column(cursor)
+    # Import here to avoid circular imports
+    from traffic_utils import with_db
+
+    @with_db
+    def _do_migration(conn=None):
+        try:
+            logger.info("Starting database migrations...")
+            with conn.cursor() as cursor:
+                # Migration 1: Add priority column to routes table
+                _migrate_add_priority_column(cursor)
+            logger.info("Database migrations completed successfully")
+        except Exception as e:
+            logger.error(f"Database migration failed: {e}")
+            raise
+
+    _do_migration()
 
 def _migrate_add_priority_column(cursor) -> None:
     """Add priority column to existing routes table if it doesn't exist."""
-    # Check if priority column exists
-    cursor.execute("""
-        SELECT column_name
-        FROM information_schema.columns
-        WHERE table_name = 'routes' AND column_name = 'priority'
-    """)
+    try:
+        # Use a more direct approach - try to add the column and catch the error if it exists
+        try:
+            logger.info("Attempting to add priority column to routes table...")
 
-    if not cursor.fetchone():
-        logger.info("Adding priority column to existing routes table...")
+            cursor.execute("""
+                ALTER TABLE routes ADD COLUMN IF NOT EXISTS priority VARCHAR(10) DEFAULT 'Normal'
+            """)
 
-        # Add priority column with default value
-        cursor.execute("""
-            ALTER TABLE routes ADD COLUMN priority VARCHAR(10) DEFAULT 'Normal'
-        """)
+            # Update any existing routes to have Normal priority (in case column was added)
+            cursor.execute("""
+                UPDATE routes SET priority = 'Normal' WHERE priority IS NULL
+            """)
 
-        # Update any existing routes to have Normal priority
-        cursor.execute("""
-            UPDATE routes SET priority = 'Normal' WHERE priority IS NULL
-        """)
+            logger.info("Priority column added successfully")
 
-        # Add constraint to ensure only High or Normal values
-        cursor.execute("""
-            ALTER TABLE routes ADD CONSTRAINT check_priority
-            CHECK (priority IN ('High', 'Normal'))
-        """)
+        except Exception as add_error:
+            logger.warning(f"Could not add priority column (may already exist): {add_error}")
+
+        # Add constraint - use IF NOT EXISTS equivalent
+        try:
+            cursor.execute("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_constraint
+                        WHERE conname = 'check_priority'
+                    ) THEN
+                        ALTER TABLE routes ADD CONSTRAINT check_priority
+                        CHECK (priority IN ('High', 'Normal'));
+                    END IF;
+                END $$;
+            """)
+        except Exception as e:
+            logger.warning(f"Could not add priority constraint: {e}")
 
         # Create index on priority for faster filtering
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_routes_priority ON routes(priority)
-        """)
+        try:
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_routes_priority ON routes(priority)
+            """)
+        except Exception as e:
+            logger.warning(f"Could not create priority index: {e}")
 
-        logger.info("Priority column migration completed successfully")
-    else:
-        logger.debug("Priority column already exists, skipping migration")
+        logger.info("Priority column migration completed")
+
+    except Exception as e:
+        logger.error(f"Failed to migrate priority column: {e}")
+        raise
