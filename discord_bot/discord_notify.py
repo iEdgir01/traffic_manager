@@ -19,6 +19,16 @@ from traffic_utils import (
     calculate_baseline, check_route_traffic, update_route_time
 )
 
+# Import balance tracker
+try:
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'balance_tracker'))
+    from balance_tracker import ClaudeBalanceTracker
+    BALANCE_TRACKING_AVAILABLE = True
+except ImportError as e:
+    logging.warning(f"Balance tracking not available: {e}")
+    BALANCE_TRACKING_AVAILABLE = False
+    ClaudeBalanceTracker = None
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -42,6 +52,16 @@ GOTIFY_PRIORITY = int(os.environ.get("GOTIFY_PRIORITY", "5")) if os.environ.get(
 CLAUDE_API_KEY = os.environ.get("CLAUDE_API_KEY")
 CLAUDE_SUMMARY_STYLE = os.environ.get("CLAUDE_SUMMARY_STYLE", "Generate a traffic summary in a random conversational style.")
 
+# Initialize balance tracker
+balance_tracker = None
+if BALANCE_TRACKING_AVAILABLE and CLAUDE_API_KEY:
+    try:
+        balance_tracker = ClaudeBalanceTracker()
+        logger.info("Balance tracker initialized")
+    except Exception as e:
+        logger.error(f"Failed to initialize balance tracker: {e}")
+        balance_tracker = None
+
 logger.info("Discord Notify module loaded")
 
 
@@ -53,6 +73,13 @@ async def generate_claude_summary(route_data: List[Dict]) -> str:
     if not CLAUDE_API_KEY:
         logger.warning("CLAUDE_API_KEY not configured, using simple summary")
         return create_simple_summary(route_data)
+
+    # Check balance before making request
+    if balance_tracker:
+        can_make_request, reason = balance_tracker.can_make_request()
+        if not can_make_request:
+            logger.warning(f"Claude API request blocked: {reason}")
+            return create_simple_summary(route_data)
 
     try:
         # Calculate dynamic word limit: minimum 8 words per route + 20 extra for style
@@ -80,14 +107,29 @@ async def generate_claude_summary(route_data: List[Dict]) -> str:
 
         chosen_style = random.choice(styles)
 
-        prompt = f"""{CLAUDE_SUMMARY_STYLE}
+        prompt = f"""You are a creative traffic reporter providing a comprehensive traffic update. Create an engaging summary using the EXACT style specified below.
 
-Current style to use: {chosen_style}
+REQUIRED STYLE: {chosen_style}
 
-Traffic Data:
+TRAFFIC DATA TO SUMMARIZE:
 {traffic_summary}
 
-Create a {word_limit}-word summary that's engaging for text-to-speech. Avoid paragraph format - use short, punchy sentences."""
+REQUIREMENTS:
+- Use approximately {word_limit} words
+- Mention ALL route names from the data above
+- Include both delayed and normal routes in your summary
+- Use the exact personality style specified
+- Make it engaging for text-to-speech (TTS)
+- Use short, punchy sentences (no paragraphs)
+- Be creative and entertaining while staying factual
+- Provide a complete traffic picture, not just problems
+
+Example styles:
+- Sarcastic: "Well folks, Highway-101 decided to become a parking lot with 15 minutes of delays, while Main-Street is actually behaving itself today."
+- Morgan Freeman: "And so it was, that Highway-101 tested the patience of travelers with delays, while Main-Street flowed like a gentle river."
+- Epic Adventure: "Today's quest reveals Highway-101 guarded by dragons of delay, while Main-Street offers safe passage to brave commuters."
+
+Create your summary now using the {chosen_style.split(':')[0]} style:"""
 
         headers = {
             "Content-Type": "application/json",
@@ -96,7 +138,7 @@ Create a {word_limit}-word summary that's engaging for text-to-speech. Avoid par
         }
 
         payload = {
-            "model": "claude-3-5-sonnet-20241022",
+            "model": "claude-3-7-sonnet-20250219",
             "max_tokens": word_limit + 50,  # Allow some buffer
             "messages": [
                 {
@@ -119,6 +161,12 @@ Create a {word_limit}-word summary that's engaging for text-to-speech. Avoid par
 
                 result = await resp.json()
                 summary = result["content"][0]["text"].strip()
+
+                # Track usage if balance tracker is available
+                if balance_tracker:
+                    cost = balance_tracker.track_claude_usage(result)
+                    logger.info(f"Claude usage tracked: ${cost}")
+
                 logger.info(f"Generated Claude summary ({len(summary.split())} words) in style: {chosen_style.split(':')[0]}")
                 return summary
 
@@ -132,12 +180,37 @@ def create_simple_summary(route_data: List[Dict]) -> str:
     heavy_routes = [r for r in route_data if r['status'].lower() == 'heavy']
     normal_routes = [r for r in route_data if r['status'].lower() == 'normal']
 
-    if heavy_routes and normal_routes:
-        return f"Traffic update: {len(heavy_routes)} routes with delays, {len(normal_routes)} routes running normal."
-    elif heavy_routes:
-        return f"Traffic alert: {len(heavy_routes)} routes experiencing delays."
-    else:
-        return f"All {len(route_data)} routes showing normal traffic conditions."
+    summary_parts = []
+
+    if heavy_routes:
+        heavy_details = []
+        for route in heavy_routes:
+            delay_info = f"{route['delay']} minutes delay" if route['delay'] > 0 else "heavy traffic"
+            heavy_details.append(f"{route['name']} has {delay_info}")
+
+        if len(heavy_routes) == 1:
+            summary_parts.append(f"Traffic alert: {heavy_details[0]}.")
+        else:
+            summary_parts.append(f"Traffic alert: {', '.join(heavy_details[:-1])}, and {heavy_details[-1]}.")
+
+    if normal_routes:
+        if len(normal_routes) == 1:
+            summary_parts.append(f"{normal_routes[0]['name']} is running normally.")
+        elif len(normal_routes) == 2:
+            summary_parts.append(f"{normal_routes[0]['name']} and {normal_routes[1]['name']} are running normally.")
+        else:
+            normal_names = [r['name'] for r in normal_routes]
+            summary_parts.append(f"{', '.join(normal_names[:-1])}, and {normal_names[-1]} are all running normally.")
+
+    if not heavy_routes and not normal_routes:
+        # Handle other statuses (Unknown, Error, etc.)
+        other_routes = [f"{r['name']} status {r['status'].lower()}" for r in route_data]
+        if len(other_routes) == 1:
+            summary_parts.append(f"Route update: {other_routes[0]}.")
+        else:
+            summary_parts.append(f"Route update: {', '.join(other_routes)}.")
+
+    return " ".join(summary_parts)
 
 
 # ---------------------
@@ -246,12 +319,14 @@ async def post_traffic_alerts_async():
                         continue
 
                     current_state = traffic["state"]
+                    prev_state = await run_in_thread(get_last_state, route_id)
 
                     route_data.append({
                         "name": name,
                         "status": current_state,
                         "delay": traffic["total_delay"],
-                        "distance": traffic["distance_km"]
+                        "distance": traffic["distance_km"],
+                        "prev_state": prev_state
                     })
 
                     # Update DB asynchronously
@@ -267,8 +342,20 @@ async def post_traffic_alerts_async():
                         "distance": 0
                     })
 
-            # Generate formatted table
-            if route_data:
+            # Check if Discord alert should be posted (only on traffic state changes)
+            discord_alert_needed = False
+            for route in route_data:
+                current = route["status"].lower()
+                prev = route.get("prev_state", "").lower() if route.get("prev_state") else ""
+
+                if (current == "heavy") or (prev == "heavy" and current == "normal"):
+                    discord_alert_needed = True
+                    break
+
+            # Generate Discord table only when alert needed
+            if discord_alert_needed and route_data:
+                logger.info("Traffic state change detected - posting Discord alert")
+
                 # Calculate column widths for alignment
                 max_name_len = max(len(r["name"]) for r in route_data)
                 max_status_len = max(len(r["status"]) for r in route_data)
@@ -298,8 +385,8 @@ async def post_traffic_alerts_async():
                 table_content = "\n".join(table_lines)
 
                 embed = {
-                    "title": "Traffic Status Summary",
-                    "color": 0x3498db,
+                    "title": "Traffic Alert - Status Change",
+                    "color": 0xFF0000 if any(r["status"].lower() == "heavy" for r in route_data) else 0x00FF00,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     "description": f"```\n{table_content}\n```"
                 }
@@ -307,20 +394,24 @@ async def post_traffic_alerts_async():
                 async with session.post(WEBHOOK_URL, json={"embeds": [embed]}, timeout=10) as resp:
                     if resp.status not in (200, 204):
                         text = await resp.text()
-                        logger.error(f"Failed to post traffic summary: {resp.status} - {text}")
+                        logger.error(f"Failed to post traffic alert: {resp.status} - {text}")
                     else:
-                        logger.info("Traffic summary table posted successfully")
+                        logger.info("Traffic alert posted successfully")
+            else:
+                logger.info("No traffic state changes detected - skipping Discord alert")
 
-            # Generate Claude summary for Gotify TTS
-            if route_data and GOTIFY_URL and GOTIFY_TOKEN:
-                logger.info("Generating Claude summary for Gotify notification...")
-                claude_summary = await generate_claude_summary(route_data)
+        # Always generate Claude summary for Gotify TTS (regardless of traffic state)
+        if route_data and GOTIFY_URL and GOTIFY_TOKEN:
+            logger.info("Generating Claude summary for Gotify notification...")
+            claude_summary = await generate_claude_summary(route_data)
 
-                try:
-                    await send_gotify_notification("Traffic Summary", claude_summary)
-                    logger.info("Gotify notification with Claude summary sent successfully")
-                except Exception as gotify_error:
-                    logger.error(f"Failed to send Gotify notification: {gotify_error}")
+            try:
+                await send_gotify_notification("Traffic Summary", claude_summary)
+                logger.info("Gotify notification with Claude summary sent successfully")
+            except Exception as gotify_error:
+                logger.error(f"Failed to send Gotify notification: {gotify_error}")
+        elif route_data:
+            logger.info("Route data available but Gotify not configured, skipping notification")
 
         logger.info("Completed processing all routes")
 
