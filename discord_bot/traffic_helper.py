@@ -61,10 +61,9 @@ TOKEN = os.environ["DISCORD_BOT_TOKEN"].strip()
 DATA_DIR = Path(os.environ["DATA_DIR"])
 MAP_DIR = Path(os.environ["MAPS_DIR"])
 
-# Token validation and debugging
+# Token validation
 if TOKEN:
     logger.info(f"Discord token loaded (length: {len(TOKEN)} chars)")
-    logger.info(f"DEBUG - Full token: {TOKEN}")  # REMOVE AFTER TROUBLESHOOTING - SECURITY RISK!
     logger.info(f"Token starts: {TOKEN[:20]}..., ends: ...{TOKEN[-5:]}")
 else:
     logger.error("DISCORD_BOT_TOKEN is empty!")
