@@ -9,19 +9,14 @@ import json
 import asyncio
 import logging
 import sys
-import random
 from datetime import datetime, timezone
-from typing import List, Dict, Any, Optional
+from typing import List, Dict
 
 import aiohttp
 from traffic_utils import (
     with_db, summarize_segments, get_routes, get_route_priority,
     calculate_baseline, check_route_traffic, update_route_time
 )
-
-# Balance tracking temporarily disabled for testing
-BALANCE_TRACKING_AVAILABLE = False
-ClaudeBalanceTracker = None
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,120 +37,11 @@ GOTIFY_URL = os.environ.get("GOTIFY_URL")
 GOTIFY_TOKEN = os.environ.get("GOTIFY_TOKEN")
 GOTIFY_PRIORITY = int(os.environ.get("GOTIFY_PRIORITY", "5")) if os.environ.get("GOTIFY_PRIORITY") else 5
 
-# Claude API configuration
-CLAUDE_API_KEY = os.environ.get("CLAUDE_API_KEY")
-CLAUDE_SUMMARY_STYLE = os.environ.get("CLAUDE_SUMMARY_STYLE", "Generate a traffic summary in a random conversational style.")
-
-# Balance tracker temporarily disabled
-balance_tracker = None
-
 logger.info("Discord Notify module loaded")
 
 
-# ---------------------
-# Claude API helper for generating summaries
-# ---------------------
-async def generate_claude_summary(route_data: List[Dict]) -> str:
-    """Generate a coherent traffic summary using Claude API"""
-    if not CLAUDE_API_KEY:
-        logger.warning("CLAUDE_API_KEY not configured, using simple summary")
-        return create_simple_summary(route_data)
-
-    # Balance checking temporarily disabled
-
-    try:
-        # Calculate dynamic word limit: minimum 8 words per route + 20 extra for style
-        min_words_per_route = 8
-        style_overhead = 20
-        word_limit = (len(route_data) * min_words_per_route) + style_overhead
-
-        # Create traffic data summary for Claude
-        traffic_summary = "\n".join([
-            f"Route: {route['name']} | Status: {route['status']} | Delay: {route['delay']} min | Distance: {route['distance']:.1f} km"
-            for route in route_data
-        ])
-
-        # Choose random style
-        styles = [
-            "Serious / Professional: Neutral, clear, news-anchor style",
-            "Local News Reporter: Adds place-specific context, like 'In downtown traffic...'",
-            "Comedian / Sarcastic: Adds jokes or exaggerations, e.g., 'Route A is basically a parking lot'",
-            "Friendly Advice / Casual: Conversational tone, like a friend talking",
-            "Trump-Style: Over-the-top, hyperbolic, self-referential speech patterns",
-            "Morgan Freeman Narrator: Calm, dramatic, storytelling style",
-            "Epic / Adventure Style: Makes traffic sound like a quest",
-            "Fairy Tale / Fantasy: 'The dragons of congestion guard Route A'"
-        ]
-
-        chosen_style = random.choice(styles)
-
-        prompt = f"""You are a creative traffic reporter providing a comprehensive traffic update. Create an engaging summary using the EXACT style specified below.
-
-REQUIRED STYLE: {chosen_style}
-
-TRAFFIC DATA TO SUMMARIZE:
-{traffic_summary}
-
-REQUIREMENTS:
-- Use approximately {word_limit} words
-- Mention ALL route names from the data above
-- Include both delayed and normal routes in your summary
-- Use the exact personality style specified
-- Make it engaging for text-to-speech (TTS)
-- Use short, punchy sentences (no paragraphs)
-- Be creative and entertaining while staying factual
-- Provide a complete traffic picture, not just problems
-
-Example styles:
-- Sarcastic: "Well folks, Highway-101 decided to become a parking lot with 15 minutes of delays, while Main-Street is actually behaving itself today."
-- Morgan Freeman: "And so it was, that Highway-101 tested the patience of travelers with delays, while Main-Street flowed like a gentle river."
-- Epic Adventure: "Today's quest reveals Highway-101 guarded by dragons of delay, while Main-Street offers safe passage to brave commuters."
-
-Create your summary now using the {chosen_style.split(':')[0]} style:"""
-
-        headers = {
-            "Content-Type": "application/json",
-            "x-api-key": CLAUDE_API_KEY,
-            "anthropic-version": "2023-06-01"
-        }
-
-        payload = {
-            "model": "claude-3-7-sonnet-20250219",
-            "max_tokens": word_limit + 50,  # Allow some buffer
-            "messages": [
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ]
-        }
-
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "https://api.anthropic.com/v1/messages",
-                json=payload,
-                headers=headers,
-                timeout=30
-            ) as resp:
-                if resp.status != 200:
-                    text = await resp.text()
-                    raise Exception(f"Claude API returned {resp.status}: {text}")
-
-                result = await resp.json()
-                summary = result["content"][0]["text"].strip()
-
-                # Usage tracking temporarily disabled
-
-                logger.info(f"Generated Claude summary ({len(summary.split())} words) in style: {chosen_style.split(':')[0]}")
-                return summary
-
-    except Exception as e:
-        logger.error(f"Failed to generate Claude summary: {e}")
-        return create_simple_summary(route_data)
-
-
 def create_simple_summary(route_data: List[Dict]) -> str:
-    """Fallback simple summary when Claude API is unavailable"""
+    """Create a simple traffic summary for notifications"""
     heavy_routes = [r for r in route_data if r['status'].lower() == 'heavy']
     normal_routes = [r for r in route_data if r['status'].lower() == 'normal']
 
@@ -379,9 +265,9 @@ async def post_traffic_alerts_async():
             else:
                 logger.info("No traffic state changes detected - skipping Discord alert")
 
-        # Priority-aware Claude summary for Gotify TTS
+        # Priority-aware summary for Gotify TTS
         if route_data and GOTIFY_URL and GOTIFY_TOKEN:
-            # Filter routes for Gotify/LLM processing based on priority logic
+            # Filter routes for Gotify processing based on priority logic
             gotify_routes = []
             for route in route_data:
                 route_name = route["name"]
@@ -404,12 +290,12 @@ async def post_traffic_alerts_async():
                         logger.debug(f"Skipping Normal priority route '{route_name}' from Gotify summary (no traffic condition)")
 
             if gotify_routes:
-                logger.info(f"Generating Claude summary for {len(gotify_routes)} eligible routes...")
-                claude_summary = await generate_claude_summary(gotify_routes)
+                logger.info(f"Generating summary for {len(gotify_routes)} eligible routes...")
+                summary = create_simple_summary(gotify_routes)
 
                 try:
-                    await send_gotify_notification("Traffic Summary", claude_summary)
-                    logger.info("Gotify notification with Claude summary sent successfully")
+                    await send_gotify_notification("Traffic Summary", summary)
+                    logger.info("Gotify notification sent successfully")
                 except Exception as gotify_error:
                     logger.error(f"Failed to send Gotify notification: {gotify_error}")
             else:

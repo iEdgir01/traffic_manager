@@ -8,28 +8,27 @@ Traffic Manager is a comprehensive traffic monitoring system that automatically 
 
 ## Features
 
-### 🚗 Smart Traffic Detection
+### Smart Traffic Detection
 - **Dynamic Thresholds**: Configurable traffic detection based on route distance
 - **Heavy Traffic Analysis**: Both total delay and segment-level traffic analysis
 - **Historical Baselines**: Improved accuracy using historical traffic data
 - **Distance-Based Configuration**: Separate thresholds for different route lengths (0-2km, 2-5km, 5-20km, 20-50km)
 
-### 🤖 Discord Bot Interface
+### Discord Bot Interface
 - **Route Management**: Add, remove, and list routes via Discord with priority assignment
 - **Priority System**: High/Normal priority routes with intelligent processing
 - **Live Traffic Checks**: Check individual or all routes
 - **Visual Maps**: Automatic route map generation using Google Static Maps API
 - **Threshold Configuration**: Manage traffic detection sensitivity
 - **Real-time Notifications**: Traffic state change alerts via webhooks
-- **Claude AI Summaries**: Engaging, conversational traffic summaries in random styles
-- **Gotify Integration**: Priority-aware push notifications with LLM-generated content
+- **Gotify Integration**: Priority-aware push notifications
 
-### 📡 MQTT Integration
+### MQTT Integration
 - **Ignition Monitoring**: Automatic traffic checks when vehicle starts
 - **Configurable Timeouts**: Ignition off detection with custom timeouts
 - **Reliable Messaging**: Robust MQTT subscriber with reconnection
 
-### 🗄️ Data Management
+### Data Management
 - **PostgreSQL Database**: Persistent storage for routes, priorities, and traffic history
 - **Route Coordinates**: Support for DMS (Degrees Minutes Seconds) input
 - **Priority System**: High/Normal priority levels with automated migration
@@ -40,30 +39,30 @@ Traffic Manager is a comprehensive traffic monitoring system that automatically 
 
 ### Overview
 
-Traffic Manager implements a sophisticated priority system that intelligently determines which routes receive LLM-generated traffic summaries and push notifications. This allows you to focus on critical routes while reducing noise from less important ones.
+Traffic Manager implements a priority system that determines which routes receive traffic summaries and push notifications. This allows you to focus on critical routes while reducing noise from less important ones.
 
 ### Priority Levels
 
-#### 🔴 High Priority Routes
+#### High Priority Routes
 - **Always Processed**: Included in every traffic summary generation
-- **Immediate Notifications**: Get LLM-generated summaries regardless of traffic state
+- **Immediate Notifications**: Get summaries regardless of traffic state
 - **Use Cases**: Critical commute routes, emergency routes, VIP routes
 
-#### 🟢 Normal Priority Routes
+#### Normal Priority Routes
 - **Conditional Processing**: Only processed when traffic conditions warrant attention
-- **Smart Filtering**: Included in summaries when Heavy OR was Heavy→Normal
+- **Smart Filtering**: Included in summaries when Heavy OR was Heavy-to-Normal
 - **Use Cases**: Optional routes, secondary paths, occasional destinations
 
 ### Notification Logic
 
 #### Discord Notifications (Priority-Agnostic)
-- **Trigger**: Only on traffic state changes (Heavy→Normal OR Normal→Heavy)
+- **Trigger**: Only on traffic state changes (Heavy-to-Normal OR Normal-to-Heavy)
 - **Content**: All routes displayed regardless of priority
 - **Purpose**: Complete traffic visibility for monitoring
 
-#### Gotify/LLM Processing (Priority-Aware)
-- **High Priority**: Always included in Claude AI traffic summaries
-- **Normal Priority**: Only when Heavy OR transitioned from Heavy→Normal
+#### Gotify Processing (Priority-Aware)
+- **High Priority**: Always included in traffic summaries
+- **Normal Priority**: Only when Heavy OR transitioned from Heavy-to-Normal
 - **Result**: Focused, relevant push notifications to your mobile device
 
 ### Examples
@@ -76,111 +75,54 @@ Traffic Manager implements a sophisticated priority system that intelligently de
 - **Discord**: Alert posted with both routes (state change detected)
 - **Gotify**: Both routes in summary (High always + Normal meets Heavy criteria)
 
-**Scenario 3**: Route A (High), Route B (Normal, was Heavy→now Normal)
+**Scenario 3**: Route A (High), Route B (Normal, was Heavy to now Normal)
 - **Discord**: Alert posted with both routes (state change detected)
-- **Gotify**: Both routes in summary (High always + Normal meets Heavy→Normal criteria)
-
-## Claude AI Traffic Summaries
-
-### Overview
-
-Traffic Manager integrates with Claude AI to generate engaging, conversational traffic summaries that make traffic updates more interesting and suitable for text-to-speech (TTS) systems. Instead of dry technical reports, you get creative, personality-driven summaries.
-
-### AI-Generated Summary Features
-
-#### 🎭 Random Personality Styles
-Each summary uses a randomly selected conversational style:
-- **Professional/News Anchor**: Neutral, clear reporting style
-- **Local News Reporter**: Adds place-specific context and local flavor
-- **Comedian/Sarcastic**: Humorous takes with jokes and exaggerations
-- **Friendly Casual**: Conversational tone like talking to a friend
-- **Trump-Style**: Over-the-top, hyperbolic speech patterns
-- **Morgan Freeman Narrator**: Calm, dramatic storytelling approach
-- **Epic Adventure**: Makes traffic sound like a heroic quest
-- **Fairy Tale/Fantasy**: Whimsical takes with dragons and magic
-
-#### 📝 Smart Content Generation
-- **Dynamic Length**: Word count scales with number of routes (8 words per route + 20 style overhead)
-- **Complete Coverage**: Mentions ALL routes in the summary (both heavy and normal)
-- **TTS Optimized**: Short, punchy sentences perfect for voice synthesis
-- **Factual Base**: Creative style while maintaining accurate traffic information
-
-#### 🔄 Fallback System
-- **Primary**: Claude AI generates creative summaries
-- **Fallback**: Simple technical summaries if API unavailable
-- **Reliability**: Ensures notifications always work regardless of AI service status
-
-### Example AI Summaries
-
-**Sarcastic Style:**
-> "Well folks, Highway-101 decided to become a parking lot with 15 minutes of delays, while Main-Street is actually behaving itself today."
-
-**Morgan Freeman Style:**
-> "And so it was, that Highway-101 tested the patience of travelers with delays, while Main-Street flowed like a gentle river."
-
-**Epic Adventure Style:**
-> "Today's quest reveals Highway-101 guarded by dragons of delay, while Main-Street offers safe passage to brave commuters."
-
-### Configuration
-
-#### Environment Variables
-```bash
-# Claude AI Configuration
-CLAUDE_API_KEY=your_anthropic_api_key
-CLAUDE_SUMMARY_STYLE="Generate a traffic summary in a random conversational style. Choose from: Professional, Local News Reporter, Sarcastic, Friendly Casual, Trump-Style, Morgan Freeman Narrator, Epic Adventure, or Fairy Tale. Make it engaging for TTS and avoid paragraph format."
-```
-
-#### Integration Points
-- **Priority-Aware**: Only processes routes meeting priority criteria
-- **Gotify Delivery**: AI summaries sent as push notifications
-- **Automatic Failover**: Falls back to simple summaries if Claude API fails
-- **Performance Optimized**: Async processing with 30-second timeout
+- **Gotify**: Both routes in summary (High always + Normal meets Heavy-to-Normal criteria)
 
 ## Architecture
 
 ### Components
 
 ```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│  Ignition       │    │   Discord Bot   │    │   PostgreSQL    │
-│  Subscriber     │◄──►│                 │◄──►│   Database      │
-│                 │    │                 │    │                 │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-         │                        │                        │
-         │                        │                        │
-         ▼                        ▼                        ▼
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   MQTT Broker   │    │  Google Maps    │    │   Route Maps    │
-│                 │    │     APIs        │    │     Cache       │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-         │                        │                        │
-         │                        │                        │
-         ▼                        ▼                        ▼
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Claude AI     │    │ Gotify Push     │    │   Discord       │
-│   LLM Engine    │    │ Notifications   │    │   Webhooks      │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
++-----------------+    +-----------------+    +-----------------+
+|  Ignition       |    |   Discord Bot   |    |   PostgreSQL    |
+|  Subscriber     |<-->|                 |<-->|   Database      |
+|                 |    |                 |    |                 |
++-----------------+    +-----------------+    +-----------------+
+         |                        |                        |
+         |                        |                        |
+         v                        v                        v
++-----------------+    +-----------------+    +-----------------+
+|   MQTT Broker   |    |  Google Maps    |    |   Route Maps    |
+|                 |    |     APIs        |    |     Cache       |
++-----------------+    +-----------------+    +-----------------+
+         |                        |
+         |                        |
+         v                        v
++-----------------+    +-----------------+
+| Gotify Push     |    |   Discord       |
+| Notifications   |    |   Webhooks      |
++-----------------+    +-----------------+
 ```
 
 1. **Ignition Subscriber**: Monitors MQTT messages for vehicle ignition events
 2. **Discord Bot**: Provides user interface for route management and notifications
 3. **PostgreSQL Database**: Stores route data, priorities, traffic history, and configuration
 4. **Google Maps Integration**: Traffic data and route map generation
-5. **Claude AI LLM Engine**: Generates engaging, conversational traffic summaries
-6. **Gotify Push Notifications**: Delivers AI-generated summaries to mobile devices
-7. **Discord Webhooks**: Posts structured traffic alerts to Discord channels
+5. **Gotify Push Notifications**: Delivers traffic summaries to mobile devices
+6. **Discord Webhooks**: Posts structured traffic alerts to Discord channels
 
 ### Data Flow
 
-1. **MQTT Message** → Ignition detected by subscriber
-2. **Traffic Check** → Google Maps API queried for all routes
-3. **Analysis** → Traffic conditions compared against dynamic thresholds
-4. **Storage** → Results saved to PostgreSQL with historical data
-5. **Priority Filtering** → Routes filtered based on priority criteria
-6. **AI Summary Generation** → Claude AI creates conversational traffic summaries
-7. **Discord Notification** → Structured alerts posted via webhooks (priority-agnostic)
-8. **Gotify Push** → AI-generated summaries sent as push notifications (priority-aware)
-9. **Visualization** → Route maps generated and cached
+1. **MQTT Message** - Ignition detected by subscriber
+2. **Traffic Check** - Google Maps API queried for all routes
+3. **Analysis** - Traffic conditions compared against dynamic thresholds
+4. **Storage** - Results saved to PostgreSQL with historical data
+5. **Priority Filtering** - Routes filtered based on priority criteria
+6. **Summary Generation** - Traffic summaries created
+7. **Discord Notification** - Structured alerts posted via webhooks (priority-agnostic)
+8. **Gotify Push** - Summaries sent as push notifications (priority-aware)
+9. **Visualization** - Route maps generated and cached
 
 ## Quick Start
 
@@ -224,10 +166,6 @@ IGNITION_TIMEOUT=300
 GOTIFY_URL=https://your-gotify-server.com
 GOTIFY_TOKEN=your_gotify_app_token
 GOTIFY_PRIORITY=5
-
-# Claude AI Integration (Optional)
-CLAUDE_API_KEY=your_anthropic_api_key
-CLAUDE_SUMMARY_STYLE="Generate a traffic summary in a random conversational style. Choose from: Professional, Local News Reporter, Sarcastic, Friendly Casual, Trump-Style, Morgan Freeman Narrator, Epic Adventure, or Fairy Tale. Make it engaging for TTS and avoid paragraph format."
 ```
 
 ### Installation
@@ -305,29 +243,26 @@ The system will trigger traffic alerts when it receives the first ignition ON me
 
 ### Android Gotify Integration
 
-Traffic Manager sends intelligent, AI-generated summaries as push notifications to a Gotify server for Android integration. These notifications use Claude AI to create engaging, conversational summaries instead of dry technical reports.
+Traffic Manager sends traffic summaries as push notifications to a Gotify server for Android integration.
 
 **Gotify Notification Format:**
 ```
 Title: "Traffic Summary"
-Message: {Claude AI generated conversational summary}
+Message: {traffic summary}
 Priority: {configured_priority}
 ```
 
-**AI-Generated Message Examples:**
-- **Sarcastic Style**: `"Well folks, Highway-101 decided to become a parking lot with 15 minutes of delays, while Main-Street is actually behaving itself today."`
-- **Morgan Freeman Style**: `"And so it was, that Highway-101 tested the patience of travelers with delays, while Main-Street flowed like a gentle river."`
-- **Epic Adventure Style**: `"Today's quest reveals Highway-101 guarded by dragons of delay, while Main-Street offers safe passage to brave commuters."`
-
-**Fallback Messages (when Claude AI unavailable):**
-- **Heavy Traffic**: `"Heavy traffic detected on {route}, current delay is {delay} minutes."`
-- **Traffic Cleared**: `"You can expect normal travel times on {route}."`
+**Message Examples:**
+- **Heavy Traffic**: `"Traffic alert: Highway-101 has 15 minutes delay."`
+- **Multiple Routes Heavy**: `"Traffic alert: Highway-101 has 12 minutes delay, and Main-Street has 8 minutes delay."`
+- **Mixed Conditions**: `"Traffic alert: Highway-101 has 10 minutes delay. Main-Street and Beach-Road are running normally."`
+- **All Normal**: `"Main-Street, Highway-101, and Beach-Road are all running normally."`
 
 **Priority-Aware Processing:**
 - **High Priority Routes**: Always included in summaries
-- **Normal Priority Routes**: Only when Heavy OR was Heavy→Normal
+- **Normal Priority Routes**: Only when Heavy OR was Heavy-to-Normal
 
-Install the Gotify Android app and configure it to connect to your Gotify server to receive creative, TTS-friendly traffic summaries.
+Install the Gotify Android app and configure it to connect to your Gotify server to receive traffic summaries.
 
 ## Configuration
 
@@ -469,21 +404,13 @@ The project follows Python best practices:
    - Verify broker credentials and network access
    - Check subscriber logs: `docker logs ignition_subscriber`
 
-5. **Claude AI Summary Issues**
-   - Verify Claude API key is valid and has sufficient credits
-   - Check that CLAUDE_API_KEY environment variable is set
-   - Monitor logs for Claude API failures - system automatically falls back to simple summaries
-   - Verify internet connectivity for API calls
-
 ### Performance Optimization
 
 - Route maps are cached automatically
 - Historical traffic data is limited to last 20 entries
 - Database connections use connection pooling
 - Background tasks use thread pools for concurrency
-- Claude AI summaries use async processing with 30-second timeout
-- Priority-based filtering reduces API calls to essential routes only
-- Automatic fallback ensures notifications work even if AI service fails
+- Priority-based filtering reduces processing to essential routes only
 
 ## Contributing
 
