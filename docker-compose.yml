@@ -1,22 +1,8 @@
 services:
-  postgres_db:
-    image: postgres:15
-    container_name: postgres_db
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
-    volumes:
-      - ./data/db:/var/lib/postgresql/data
-    networks:
-      - tailscale-traffic-manager-net
   ignition_subscriber:
     image: iedgir01/traffic_manager_ignition_subscriber:latest
     container_name: ignition_subscriber
     restart: unless-stopped
-    depends_on:
-      - postgres_db
     environment:
       PYTHONUNBUFFERED: 1
       MQTT_BROKER: ${MQTT_BROKER}
@@ -36,16 +22,14 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
-      - ./data:/app/data
+      - /data/docker/traffic_manager:/app/data
     networks:
-      - tailscale-traffic-manager-net
+      - docker-bridge
 
   discord_bot:
     image: iedgir01/traffic_manager_discord_bot:latest
     container_name: discord_bot
     restart: unless-stopped
-    depends_on:
-      - postgres_db
     environment:
       PYTHONUNBUFFERED: 1
       DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN}
@@ -62,10 +46,10 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
-      - ./data:/app/data
+      - /data/docker/traffic_manager:/app/data
     networks:
-      - tailscale-traffic-manager-net
+      - docker-bridge
 
 networks:
-  tailscale-traffic-manager-net:
-    driver: bridge
+  docker-bridge:
+    external: true
