@@ -853,7 +853,8 @@ class ListRoutesButton(Button):
                     "start_lng": start_lng,
                     "end_lat": end_lat,
                     "end_lng": end_lng,
-                    "map_path": map_path
+                    "map_path": map_path,
+                    "priority": row.get('priority', 'Normal')
                 })
 
             pagination = RoutesPagination(routes_data)
